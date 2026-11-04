@@ -1,0 +1,97 @@
+x-runtime: &runtime
+  image: inf326-shortener:runtime
+  build:
+    context: .
+    target: runtime
+  init: true
+  restart: unless-stopped
+
+x-http-health: &http-health
+  test: [CMD, uv, run, --no-sync, python, -m, shortener.healthcheck]
+  interval: 5s
+  timeout: 5s
+  retries: 6
+  start_period: 5s
+
+services:
+  certificates:
+    <<: *runtime
+    restart: "no"
+    command: [uv, run, --no-sync, python, -m, shortener.certificates]
+    volumes:
+      - certificates:/certs
+
+  log:
+    <<: *runtime
+    command: [uv, run, --no-sync, python, -m, shortener.log_service]
+    environment:
+      DATABASE_PATH: /data/hits.sqlite3
+    volumes:
+      - certificates:/certs:ro
+      - log-data:/data
+    depends_on:
+      certificates:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, uv, run, --no-sync, python, -m, shortener.healthcheck, grpc]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+  shortener-v1:
+    <<: *runtime
+    ports:
+      - "127.0.0.1:${V1_PORT:-8443}:8000"
+    environment:
+      ARCHITECTURE: v1
+      DATABASE_PATH: /data/urls.sqlite3
+      PUBLIC_BASE_URL: ${V1_PUBLIC_BASE_URL:-https://localhost:8443}
+      GRPC_TARGET: log:50051
+      GRPC_TIMEOUT: ${GRPC_TIMEOUT:-2}
+    volumes:
+      - certificates:/certs:ro
+      - v1-data:/data
+    depends_on:
+      log:
+        condition: service_healthy
+    healthcheck: *http-health
+
+  shortener-v2:
+    <<: *runtime
+    ports:
+      - "127.0.0.1:${V2_PORT:-8444}:8000"
+    environment:
+      ARCHITECTURE: v2
+      DATABASE_PATH: /data/urls.sqlite3
+      PUBLIC_BASE_URL: ${V2_PUBLIC_BASE_URL:-https://localhost:8444}
+      CACHE_TTL: ${CACHE_TTL:-60}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-60}
+    volumes:
+      - certificates:/certs:ro
+      - v2-data:/data
+    depends_on:
+      certificates:
+        condition: service_completed_successfully
+    healthcheck: *http-health
+
+  tests:
+    image: inf326-shortener:test
+    build:
+      context: .
+      target: test
+    profiles: [test]
+    init: true
+    environment:
+      E2E_V1_URL: https://shortener-v1:8000
+      E2E_V2_URL: https://shortener-v2:8000
+      E2E_LOG_DATABASE_PATH: /logs/hits.sqlite3
+    volumes:
+      - certificates:/certs:ro
+      - log-data:/logs
+
+volumes:
+  certificates:
+  log-data:
+  v1-data:
+  v2-data:
