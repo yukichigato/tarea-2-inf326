@@ -28,6 +28,7 @@ FROM build AS production-dependencies
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev
 
 FROM base AS runtime
+COPY --from=production-dependencies /app/pyproject.toml /app/uv.lock ./
 COPY --from=production-dependencies /app/.venv /app/.venv
 COPY --from=production-dependencies /app/shortener /app/shortener
 RUN mkdir /data /certs && chown app:app /data /certs
