@@ -37,6 +37,22 @@ flowchart TB
 
 El contrato está en `proto/shortener/rpc/hits.proto`: `RecordHit` recibe `url` y `visited_at` y devuelve `google.protobuf.Empty` tras persistirlos. Los archivos Python generados se crean dentro de la imagen y no se versionan.
 
+### Datos del contrato y su procedencia
+
+| Campo | Significado y fuente |
+| --- | --- |
+| `POST /urls`: `long_url` | URL HTTP/HTTPS entregada por el cliente. Pydantic normaliza su representación; el acortador no descarga ni verifica el contenido de la página. |
+| Respuesta 201: `id` | Entero asignado por la secuencia de la base de URLs de esa arquitectura. |
+| Respuesta 201: `hash` | Codificación base62 del `id`, calculada por el acortador. |
+| Respuesta 201: `long_url` | URL normalizada que quedó guardada en la transacción. |
+| Respuesta 201: `short_url` | Origen configurado en `PUBLIC_BASE_URL`, seguido del hash. |
+| Evento gRPC: `url` | La URL original normalizada recuperada de la base, igual a `long_url` y a `Location`. |
+| Evento gRPC: `visited_at` | Hora UTC del reloj del acortador, tomada después de encontrar el hash y antes de enviar el evento. Se transmite como `google.protobuf.Timestamp` y se guarda en formato ISO 8601. |
+
+El timestamp corresponde a la resolución en el acortador; no mide la llegada inicial de la petición ni confirma que el navegador haya abierto el destino. No se promete sincronización exacta entre relojes de distintos procesos.
+
+El evento cumple los dos campos solicitados por el enunciado. No contiene hash, identidad del visitante ni identificador de evento: dos enlaces cortos hacia la misma URL no pueden distinguirse en el registro. La fuente de la URL es el cliente que la creó y la fuente del timestamp es el acortador; no se consulta una fuente externa de datos.
+
 ## Arquitectura 2
 
 Versión textual:

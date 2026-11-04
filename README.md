@@ -4,10 +4,10 @@ Implementación de dos arquitecturas de acortamiento de URLs en Python 3.12 con 
 
 | Arquitectura | Redirección | Comportamiento |
 | --- | --- | --- |
-| v1 | HTTP 302 | Impide almacenar la redirección y registra cada visita mediante gRPC con TLS. |
+| v1 | HTTP 302 | Impide almacenar la redirección y espera la confirmación del registro gRPC con TLS. |
 | v2 | HTTP 301 | Usa caché de respuestas con TTL y limita las peticiones por IP mediante LiteStar. |
 
-El [enunciado original](docs/2026_INF_326_Arquitectura_de_Software_Tarea_2.pdf), la [arquitectura](docs/architecture.md) y la [discusión de trade-offs](docs/tradeoffs.md) están en `docs/`.
+El [enunciado original](docs/2026_INF_326_Arquitectura_de_Software_Tarea_2.pdf), la [arquitectura y los contratos](docs/architecture.md), la [discusión de trade-offs](docs/tradeoffs.md) y la [evidencia de validación](docs/validation.md) están en `docs/`.
 
 ## Integrantes
 
@@ -19,9 +19,11 @@ Completar antes de la entrega académica:
 
 ## Prerrequisitos
 
-- Docker con soporte BuildKit y Docker Compose v2 o posterior.
+- Docker con soporte BuildKit y Docker Compose con perfiles y `up --wait`. Se verificó con Docker 29.6.2 y Compose 5.3.1 en Linux/amd64.
 - Puertos locales 8443 y 8444 disponibles para los servicios.
 - `curl` para los ejemplos de API. No se necesita instalar Python en el host.
+
+La construcción instala las dependencias Python fijadas en `uv.lock`, genera protobuf y obtiene las bibliotecas de sistema de la imagen base fijada por digest. No requiere instalar paquetes manualmente dentro de los contenedores. La [validación](docs/validation.md) describe la construcción sin reutilizar capas y el alcance de esa comprobación.
 
 ## Ejecución
 
@@ -169,6 +171,7 @@ Los hooks revisan formato de archivos, sintaxis YAML/JSON/TOML, conflictos de me
 - SQLite usa transacciones, WAL, consultas parametrizadas y una restricción única sobre el hash. Se verifica la asignación concurrente de identificadores en las pruebas.
 - El caché y el rate limiter de v2 viven en memoria y corresponden a un solo proceso. Reiniciar el proceso los vacía; los datos de las URLs permanecen en su volumen.
 - El rate limiter utiliza la IP de conexión y no confía en `X-Forwarded-For`. `/health` queda excluido. Las solicitudes servidas desde caché también consumen cuota.
-- V1 espera la confirmación del registro antes de redirigir. Una falla de analítica devuelve 503; una falla de red después de persistir el evento puede dejar un registro aunque el cliente haya recibido un error.
+- V1 espera la confirmación del registro antes de redirigir. Una falla de analítica devuelve 503; un timeout o una falla de red puede dejar un registro persistido aunque el cliente haya recibido un error. `GRPC_TIMEOUT` limita la RPC, no la duración total de la petición HTTP.
 - `/health` comprueba la base de URLs de cada API; el contenedor de registro tiene una comprobación TLS independiente.
-- Las visitas se guardan con la URL original y un timestamp UTC. No se implementan autenticación, edición ni eliminación de URLs, porque no son parte del alcance funcional del enunciado.
+- Los eventos guardan la URL original normalizada y la hora UTC de resolución en el acortador. No confirman la apertura del destino. La [definición de los campos](docs/architecture.md#datos-del-contrato-y-su-procedencia) especifica su fuente y sus límites.
+- No se implementan autenticación, edición ni eliminación de URLs, porque no son parte del alcance funcional del enunciado. Eso no implica que el contenido de las páginas externas sea inmutable.
