@@ -1,8 +1,12 @@
 import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import Mock, patch
 
 import pytest
+from litestar.middleware import rate_limit
 from litestar.testing import TestClient
 
 from shortener.app import create_app
@@ -78,6 +82,25 @@ def test_post_requests_always_create_a_new_record(api) -> None:
     assert second["hash"] != first["hash"]
 
 
+def test_url_contract_preserves_the_normalized_destination_and_its_query(api) -> None:
+    client, settings, logger = api
+    original = "HTTPS://USM.CL/informatica/?year=2026&kind=postgrado"
+    expected = "https://usm.cl/informatica/?year=2026&kind=postgrado"
+
+    response = client.post("/urls", json={"long_url": original})
+    assert response.status_code == 201
+    payload = response.json()
+    assert set(payload) == {"id", "hash", "long_url", "short_url"}
+    assert payload["long_url"] == expected
+    redirect = client.get(f"/{payload['hash']}", follow_redirects=False)
+    assert redirect.headers["location"] == expected
+    if settings.architecture == "v1":
+        assert logger.record.call_args.args[0] == expected
+        assert logger.record.call_args.args[1].utcoffset().total_seconds() == 0
+    else:
+        logger.record.assert_not_called()
+
+
 def test_analytics_failure_returns_503(tmp_path: Path) -> None:
     settings = Settings(database_path=tmp_path / "urls.sqlite3")
     logger = Mock(spec=HitLogger)
@@ -132,3 +155,25 @@ def test_v2_rate_limit_applies_to_cached_redirects_and_excludes_health(tmp_path:
             assert "ratelimit-remaining" in response.headers
         assert client.get(f"/{record.hash}", follow_redirects=False).status_code == 429
         assert client.get("/health").status_code == 200
+
+
+def test_v2_rate_limit_counts_simultaneous_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixed_time = rate_limit.time()
+    monkeypatch.setattr(rate_limit, "time", lambda: fixed_time)
+    repository = SQLiteURLRepository(tmp_path / "urls.sqlite3")
+    record = repository.create("https://usm.cl/")
+    settings = Settings(architecture="v2", rate_limit_requests=3)
+    barrier = Barrier(8)
+
+    with TestClient(create_app(settings, repository=repository)) as client:
+
+        def request_redirect(_: int) -> int:
+            barrier.wait(timeout=5)
+            return client.get(f"/{record.hash}", follow_redirects=False).status_code
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            statuses = list(executor.map(request_redirect, range(8)))
+
+    assert Counter(statuses) == {301: 3, 429: 5}

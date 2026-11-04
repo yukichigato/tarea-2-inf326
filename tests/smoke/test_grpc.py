@@ -1,7 +1,9 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 
 import grpc
 import pytest
@@ -89,3 +91,52 @@ def test_grpc_failure_uses_the_configured_deadline(log_server) -> None:
             logger.record("https://usm.cl/", datetime.now(UTC))
     finally:
         logger.close()
+
+
+def test_grpc_timeout_can_be_followed_by_a_committed_event(
+    log_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target, ca_path, database_path = log_server
+    received = Event()
+    release_write = Event()
+    committed = Event()
+    original_record = SQLiteHitRepository.record
+
+    def delayed_record(repository: SQLiteHitRepository, url: str, visited_at: datetime) -> None:
+        received.set()
+        if not release_write.wait(timeout=5):
+            raise TimeoutError("The test did not release the pending write")
+        original_record(repository, url, visited_at)
+        committed.set()
+
+    monkeypatch.setattr(SQLiteHitRepository, "record", delayed_record)
+    logger = GrpcHitLogger(target, ca_path, timeout=0.2)
+    try:
+        grpc.channel_ready_future(logger.channel).result(timeout=3)
+        with pytest.raises(AnalyticsUnavailable) as error:
+            logger.record("https://usm.cl/", datetime.now(UTC))
+        assert received.is_set()
+        assert error.value.__cause__.code() == grpc.StatusCode.DEADLINE_EXCEEDED
+        release_write.set()
+        assert committed.wait(timeout=3)
+        with closing(sqlite3.connect(database_path)) as connection:
+            assert connection.execute("SELECT url FROM hits").fetchall() == [("https://usm.cl/",)]
+    finally:
+        release_write.set()
+        logger.close()
+
+
+def test_concurrent_grpc_visits_are_all_persisted(log_server) -> None:
+    target, ca_path, database_path = log_server
+    logger = GrpcHitLogger(target, ca_path, timeout=2)
+    urls = [f"https://usm.cl/campaign/{index}" for index in range(16)]
+    try:
+        grpc.channel_ready_future(logger.channel).result(timeout=3)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(lambda url: logger.record(url, datetime.now(UTC)), urls))
+    finally:
+        logger.close()
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        rows = connection.execute("SELECT url FROM hits").fetchall()
+    assert sorted(row[0] for row in rows) == sorted(urls)
