@@ -1,0 +1,13 @@
+*
+!pyproject.toml
+!uv.lock
+!shortener/
+!shortener/**
+!proto/
+!proto/**
+!tests/
+!tests/**
+**/__pycache__/
+**/*.pyc
+shortener/rpc/*_pb2.py
+shortener/rpc/*_pb2_grpc.py

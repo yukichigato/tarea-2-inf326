@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package shortener;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+service HitLog {
+  rpc RecordHit (UrlHit) returns (google.protobuf.Empty);
+}
+
+message UrlHit {
+  string url = 1;
+  google.protobuf.Timestamp visited_at = 2;
+}

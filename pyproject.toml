@@ -1,0 +1,43 @@
+[project]
+name = "inf326-url-shortener"
+version = "0.1.0"
+description = "Two URL shortener architectures with Litestar and gRPC"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "cryptography>=46",
+    "grpcio>=1.78,<2",
+    "litestar>=2.24,<3",
+    "protobuf>=6.33,<8",
+    "pydantic>=2.12,<3",
+    "uvicorn>=0.40,<1",
+]
+
+[dependency-groups]
+dev = [
+    "grpcio-tools>=1.78,<2",
+    "httpx>=0.28,<1",
+    "pre-commit==4.7.0",
+    "pytest>=9,<10",
+    "ruff==0.17.3",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+cache_dir = "/tmp/pytest_cache"
+addopts = "-ra -m 'not e2e'"
+markers = [
+    "smoke: application startup and basic HTTP or gRPC checks",
+    "e2e: requests against real services running in Docker Compose",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["shortener/rpc/*_pb2.py", "shortener/rpc/*_pb2_grpc.py"]
+
+[tool.ruff.lint]
+extend-select = ["I"]

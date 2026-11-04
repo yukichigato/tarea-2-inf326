@@ -1,6 +1,8 @@
 AGENTS.md
 agents.md
 /docs/tasks/
+shortener/rpc/*_pb2.py
+shortener/rpc/*_pb2_grpc.py
 
 .venv/
 venv/
