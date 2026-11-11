@@ -155,7 +155,7 @@ Las E2E consultan el registro persistido mediante una conexión SQLite de solo l
 
 ## Calidad y desarrollo
 
-Las dependencias se administran con `uv` y están fijadas en `uv.lock`. El Dockerfile utiliza caché de dependencias, genera los módulos protobuf durante la construcción y separa las herramientas de prueba de la imagen de ejecución. Todos los servicios y las pruebas se ejecutan como un usuario sin privilegios.
+Las dependencias se administran con `uv` y están fijadas en `uv.lock`. El Dockerfile utiliza caché de dependencias, genera los módulos protobuf durante la construcción y separa las herramientas de prueba de la imagen de ejecución. La imagen de ejecución contiene solo el entorno virtual y el código: no incluye `uv`, y los servicios se inician con el Python de ese entorno. Todos los servicios y las pruebas se ejecutan como un usuario sin privilegios.
 
 Para instalar y ejecutar los hooks de desarrollo en el host, con `uv` disponible:
 
