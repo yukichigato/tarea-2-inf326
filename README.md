@@ -75,7 +75,7 @@ curl --cacert ca.crt https://localhost:8443/urls \
   -d '{"long_url":"https://usm.cl/informatica/"}'
 ```
 
-La respuesta HTTP 201 contiene `id`, `hash`, `long_url` y `short_url`. El primer registro de una base vacía tiene el identificador `597652313` y el hash `eRgfR`.
+La respuesta HTTP 201 contiene `id`, `hash`, `long_url` y `short_url`. El primer registro de una base vacía tiene el identificador `597652313` y el hash `eRgfR`. La codificación base62 de `shortener/domain.py` usa el mismo alfabeto predeterminado de `pybase62` (dígitos, mayúsculas y minúsculas) y produce sus mismos resultados; por eso el primer hash coincide con el ejemplo `usm.cl/eRgfR` del enunciado.
 
 Para consultar la redirección, reemplazar `HASH` por el valor recibido:
 
@@ -171,6 +171,7 @@ Los hooks revisan formato de archivos, sintaxis YAML/JSON/TOML, conflictos de me
 - SQLite usa transacciones, WAL, consultas parametrizadas y una restricción única sobre el hash. Se verifica la asignación concurrente de identificadores en las pruebas.
 - El caché y el rate limiter de v2 viven en memoria y corresponden a un solo proceso. Reiniciar el proceso los vacía; los datos de las URLs permanecen en su volumen.
 - El rate limiter utiliza la IP de conexión y no confía en `X-Forwarded-For`. `/health` queda excluido. Las solicitudes servidas desde caché también consumen cuota.
+- Con los puertos publicados por Docker, v2 no ve la IP real de los clientes del host: en la validación, las peticiones a `localhost` y `127.0.0.1` llegaron con la IP del gateway de la red de Compose (`172.20.0.1`), mientras que las de otro contenedor llegaron con la IP de ese contenedor. Por eso, todos los clientes que entran por el puerto publicado comparten una cuota. Para cuotas por cliente en un despliegue real se necesita un proxy inverso de confianza y configurar uvicorn con `proxy_headers` y `forwarded_allow_ips` limitado a ese proxy.
 - V1 espera la confirmación del registro antes de redirigir. Una falla de analítica devuelve 503; un timeout o una falla de red puede dejar un registro persistido aunque el cliente haya recibido un error. `GRPC_TIMEOUT` limita la RPC, no la duración total de la petición HTTP.
 - `/health` comprueba la base de URLs de cada API. En v1 también exige que el canal gRPC con el registro esté listo dentro de `GRPC_TIMEOUT` y responde 503 si no lo está, porque en ese estado v1 no puede redirigir. El contenedor de registro tiene una comprobación TLS independiente.
 - Los eventos guardan la URL original normalizada y la hora UTC de resolución en el acortador. No confirman la apertura del destino. La [definición de los campos](docs/architecture.md#datos-del-contrato-y-su-procedencia) especifica su fuente y sus límites.

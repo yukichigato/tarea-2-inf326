@@ -12,6 +12,20 @@
 
 Para una campaña que necesite registros de uso, v1 ofrece analítica con el costo de esperar su persistencia. Para enlaces estables sin esa necesidad, v2 evita trabajo repetido. No se dispone de tráfico real de la USM para cuantificar esa diferencia ni para afirmar cuál será más utilizada.
 
+## Recomendación para la USM
+
+| Escenario de la USM | Arquitectura recomendada | Motivo |
+| --- | --- | --- |
+| Difusión medible, como el enlace de postulación a postgrado del enunciado, campañas de admisión o inscripción a eventos. | v1 | Cada visita llega al acortador y deja un evento con URL y hora. Es la única de las dos que permite contar visitas. |
+| Enlaces estables en reglamentos, documentos oficiales, material impreso o códigos QR. | v2 | El destino no debería cambiar, la redirección permanente expresa esa intención y el caché evita trabajo repetido. |
+| Publicaciones con demanda concentrada, como resultados o matrícula, sin necesidad de analítica. | v2, con cuota revisada | El caché evita consultar la base por cada visita y la cuota acota a cada cliente. Si muchos estudiantes salen por una misma IP del campus, la cuota por IP puede rechazar a usuarios legítimos. |
+
+No hay una arquitectura mejor en general: v1 compra información a costa de latencia y de depender del registro; v2 compra menos trabajo y menos dependencias a costa de no saber cuántas visitas hubo. La USM debería elegir por enlace o por tipo de campaña. Ambas versiones son independientes, por lo que un mismo hash no significa lo mismo en las dos.
+
+**Alternativa intermedia, no implementada.** v1 podría responder 302 sin esperar la confirmación y entregar el evento después, desde una cola. La redirección dejaría de depender de la disponibilidad del registro, pero un 302 ya no confirmaría el evento. Con una cola en memoria, un reinicio pierde eventos pendientes. Con una cola persistente se agrega un componente, la confirmación es diferida y los reintentos pueden duplicar eventos. Esta opción no sirve para v2: las visitas resueltas desde el caché del navegador nunca llegan al servidor.
+
+**Privacidad.** El evento de v1 guarda solo la URL de destino y la hora; no guarda IP, cookies ni identificadores del navegador. Agregarlos permitiría analítica por visitante, pero convertiría el registro en datos personales y obligaría a la USM a definir finalidad, plazo de retención y acceso. V2 sí procesa la IP para la cuota, pero solo en memoria y durante la ventana del límite; no la persiste.
+
 ## Latencia y disponibilidad del registro
 
 El beneficio de esperar gRPC es concreto: el acortador emite 302 después de recibir la confirmación del registro. El costo incluye serialización, comunicación, espera por un trabajador y escritura en su base. Separar el servicio permite evolucionarlo por su cuenta, pero mantiene esa dependencia en el camino de redirección. No hay un bróker en esta implementación: es una llamada gRPC síncrona.
@@ -48,14 +62,20 @@ La consecuencia de agotar la RPC es 503, pero no garantiza que el evento esté a
 
 Una ráfaga puede encontrar el caché frío: varias peticiones pueden consultar la base antes de que exista una copia, porque no se agrupan consultas simultáneas por hash. V1 tiene ocho trabajadores gRPC y escrituras SQLite serializadas; de ese número no se deduce una tasa de atención.
 
-El límite de v2 se aplica por IP, incluso sobre respuestas cacheadas. Usuarios tras una misma salida de la USM comparten cuota. El valor de 60 peticiones por minuto es una política configurable, no una estimación de demanda o capacidad global. Caché y cuotas son locales a un proceso: reiniciarlo los vacía y añadir réplicas no crea un límite compartido.
+El límite de v2 se aplica por IP, incluso sobre respuestas cacheadas. Usuarios tras una misma salida de la USM comparten cuota. En el despliegue con Docker Compose de esta entrega, además, la IP observada para las peticiones del host es la del gateway de la red interna (medido en la [validación](validation.md)), de modo que todos esos clientes comparten una sola cuota. El valor de 60 peticiones por minuto es una política configurable, no una estimación de demanda o capacidad global. Caché y cuotas son locales a un proceso: reiniciarlo los vacía y añadir réplicas no crea un límite compartido.
 
 Las pruebas verifican 16 RPC desde ocho hilos emisores y ocho GET simultáneos con cuota de tres; sus resultados están en [la validación](validation.md). No se conocen el volumen de visitas esperado por la USM, su distribución temporal ni la proporción de aciertos de caché. No se inventan esos valores ni se presentan percentiles, capacidad máxima o garantías temporales a partir de pruebas funcionales.
 
 ## Bonus: unicidad en un ambiente distribuido
 
-La secuencia actual garantiza unicidad en cada base SQLite. Dos nodos con bases independientes y el mismo contador producirían los mismos hashes: base62 no agrega unicidad a números repetidos.
+La secuencia actual garantiza unicidad en cada base SQLite. Dos nodos con bases independientes y el mismo contador producirían los mismos hashes: base62 es una biyección, no agrega unicidad a números repetidos. El problema se reduce, por tanto, a que ningún `id` se entregue dos veces. Si cada `id` es único, su codificación base62 también lo es, y una restricción única sobre `hash` actúa como última defensa.
 
-Una solución es usar una base transaccional autoritativa para todos los nodos, con una secuencia de 64 bits, clave primaria en `id` y restricción única en `hash`. Cada creación obtiene el ID, calcula base62 y confirma la equivalencia antes de responder. PostgreSQL ofrece `nextval` atómico entre sesiones concurrentes; puede dejar saltos, lo que no perjudica la unicidad. Véase su [documentación de secuencias](https://www.postgresql.org/docs/current/functions-sequence.html).
+| Estrategia | Cómo garantiza unicidad | Condiciones | Costos |
+| --- | --- | --- | --- |
+| Secuencia central | Una base transaccional autoritativa asigna cada `id`; por ejemplo, `nextval` de PostgreSQL es atómico entre sesiones concurrentes ([documentación](https://www.postgresql.org/docs/current/functions-sequence.html)). | Una sola autoridad de escritura. Un failover no debe reutilizar IDs confirmados, por ejemplo al restaurar un respaldo atrasado. | Cada creación depende de la autoridad; si no está disponible, se detienen las altas. Puede dejar saltos, lo que no afecta la unicidad. |
+| Rangos disjuntos | Un asignador central entrega bloques no solapados, por ejemplo `[597652313, 597653312]` al nodo A y el siguiente al nodo B. Cada nodo asigna dentro de su bloque sin coordinarse. | El asignador debe persistir el límite entregado antes de responder y no volver a entregarlo nunca, aunque un nodo se caiga. | Solo se consulta al asignador al agotar un bloque. Los IDs dejan de ser crecientes entre nodos y un nodo caído deja huecos. |
+| ID con nodo, al estilo Snowflake | Cada `id` combina tiempo, un identificador de nodo único y un contador local, por lo que dos nodos no pueden generar el mismo valor. | Los identificadores de nodo deben asignarse sin repetirse, y el reloj no debe retroceder: si lo hace, el nodo debe esperar o rechazar. | No requiere coordinación por creación. Los IDs crecen hasta 64 bits y el hash hasta 11 caracteres, y ya no empiezan en `597652313` con incremento 1. |
 
-Se requiere una sola autoridad de escritura y un failover que no reutilice IDs confirmados; otra secuencia independiente o un contador restaurado desde un respaldo atrasado rompería esa condición. Si la autoridad no está disponible, se detienen las nuevas asignaciones. Esta alternativa agrega una dependencia operativa y no está implementada en la entrega.
+No se recomiendan UUID aleatorios ni el hash de la URL larga como identificador: su colisión es improbable, pero no imposible sin verificación, y producen URLs más largas. El enunciado admite identificadores no autoincrementales solo si su unicidad está asegurada.
+
+Para la USM, si existe un solo punto de escritura, la secuencia central es la opción más simple. Si se agregan nodos de escritura, los rangos disjuntos conservan hashes cortos y el inicio en `597652313`, y dependen del asignador solo ocasionalmente. Ninguna de estas alternativas está implementada en la entrega.
