@@ -60,7 +60,7 @@ La consecuencia de agotar la RPC es 503, pero no garantiza que el evento esté a
 
 ## Ráfagas, cuotas y datos desconocidos
 
-Una ráfaga puede encontrar el caché frío: varias peticiones pueden consultar la base antes de que exista una copia, porque no se agrupan consultas simultáneas por hash. V1 tiene ocho trabajadores gRPC y escrituras SQLite serializadas; de ese número no se deduce una tasa de atención.
+Una ráfaga puede encontrar el caché frío: varias peticiones pueden consultar la base antes de que exista una copia, porque no se agrupan consultas simultáneas por hash. V1 tiene ocho trabajadores gRPC y escrituras SQLite serializadas; de ese número no se deduce una tasa de atención. En los acortadores, LiteStar ejecuta los handlers síncronos en el ejecutor por defecto de asyncio, que en Python 3.12 tiene `min(32, núcleos + 4)` hilos. Se deduce, sin haberlo medido, que mientras el registro tarde, cada GET de v1 ocupa uno de esos hilos durante hasta `GRPC_TIMEOUT`; si se ocupan todos, también esperan las creaciones y `/health`.
 
 El límite de v2 se aplica por IP, incluso sobre respuestas cacheadas. Usuarios tras una misma salida de la USM comparten cuota. En el despliegue con Docker Compose de esta entrega, además, la IP observada para las peticiones del host es la del gateway de la red interna (medido en la [validación](validation.md)), de modo que todos esos clientes comparten una sola cuota. El valor de 60 peticiones por minuto es una política configurable, no una estimación de demanda o capacidad global. Caché y cuotas son locales a un proceso: reiniciarlo los vacía y añadir réplicas no crea un límite compartido.
 

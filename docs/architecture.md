@@ -83,7 +83,7 @@ flowchart TB
     v2 -->|201 o 301| browser
 ```
 
-El middleware limita las peticiones antes de servir una respuesta, incluida una respuesta cacheada. El decorador de LiteStar habilita el caché en el GET y un filtro acepta exclusivamente respuestas 301. No se cachean creaciones ni errores. El TTL predeterminado es 60 segundos, tanto en el servidor como en `Cache-Control`.
+El middleware limita las peticiones antes de servir una respuesta, incluida una respuesta cacheada. El decorador de LiteStar habilita el caché en el GET y un filtro acepta exclusivamente respuestas 301. La clave del caché es solo la ruta: los parámetros de consulta no cambian la redirección y, con la clave predeterminada de LiteStar, cada variante crearía una copia nueva. `MemoryStore` elimina una entrada vencida solo cuando se vuelve a leer su clave, así que el número de entradas queda acotado por los hashes existentes que se han consultado. No se cachean creaciones ni errores. El TTL predeterminado es 60 segundos, tanto en el servidor como en `Cache-Control`.
 
 El caché evita consultar repetidamente SQLite; el caché del navegador puede evitar incluso contactar al servicio. V2 no necesita el contenedor de registro para funcionar.
 

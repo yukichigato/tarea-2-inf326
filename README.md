@@ -88,12 +88,13 @@ La respuesta incluye `302`, `Location` y `Cache-Control: no-store`. Para probar 
 | Situación | Respuesta |
 | --- | --- |
 | URL HTTP/HTTPS válida | 201 y nueva URL corta |
-| Cuerpo inválido, URL sin esquema o protocolo distinto de HTTP/HTTPS | 400 |
+| Cuerpo inválido, URL sin esquema, protocolo distinto de HTTP/HTTPS o URL de más de 2083 caracteres | 400 |
 | Hash inexistente | 404 |
+| Método no definido, por ejemplo `HEAD` sobre una URL corta | 405 |
 | Límite de v2 agotado | 429 |
 | Registro gRPC no disponible al resolver en v1 | 503, sin redirección |
 
-Cada `POST` crea una equivalencia nueva, incluso si la URL ya existía. El servicio acepta URLs con esquema explícito, por ejemplo `https://usm.cl/`.
+Cada `POST` crea una equivalencia nueva, incluso si la URL ya existía. El servicio acepta URLs con esquema explícito, por ejemplo `https://usm.cl/`. Los dominios internacionales se guardan en punycode y los caracteres no ASCII de la ruta y la query, con codificación porcentual. Los parámetros de consulta en la URL corta (por ejemplo `?utm_source=x`) se ignoran.
 
 ## Configuración
 
