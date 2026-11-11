@@ -1,81 +1,86 @@
 # Discusión de trade-offs para la USM
 
-## Elección entre las arquitecturas
+Las dos arquitecturas resuelven los mismos requisitos funcionales, pero privilegian atributos de calidad distintos. La arquitectura 1 privilegia la **analítica**; la arquitectura 2, el **desempeño** y la **simplicidad operativa**. Esta discusión compara qué gana y qué cede cada una en desempeño, disponibilidad, consistencia y operación, y evalúa su conveniencia para la USM como mandante. No se dispone de tráfico real de la USM, por lo que el análisis es cualitativo: no se estiman volúmenes de visitas, tasas de acierto del caché ni latencias.
 
-| Aspecto | Arquitectura 1 | Arquitectura 2 |
+## 1. Arquitectura 1: redirección temporal con registro de visitas
+
+**Beneficio.** La respuesta 302 va acompañada de `Cache-Control: no-store`, que prohíbe guardarla en cachés conformes ([RFC 9111, §5.2.2.5](https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.2.5)). Por eso, cada visita pasa por el acortador y genera un evento `url hit` con la URL y el timestamp. El acortador redirige solo después de que el servicio Log confirma la escritura. Así, toda redirección entregada tiene su evento registrado.
+
+**Costos.**
+
+- **Latencia.** Cada visita suma una llamada gRPC síncrona con TLS y una escritura en la base del registro.
+- **Disponibilidad.** Para redirigir se necesitan dos componentes en funcionamiento. Si Log no responde dentro de `GRPC_TIMEOUT`, el acortador devuelve 503: se prefiere no redirigir antes que perder un evento. Del código se deduce, sin haberlo medido, que mientras Log esté lento cada visita ocupa un hilo del servidor HTTP. Si se ocupan todos, también se retrasan las creaciones de URLs.
+- **Consistencia.** No hay una transacción común entre el acortador y Log. Un timeout puede ocurrir después de que Log ya guardó el evento, y en ese caso existe un evento sin redirección; `test_grpc_timeout_can_be_followed_by_a_committed_event` lo reproduce ([deadlines en gRPC](https://grpc.io/docs/guides/deadlines/)). Si el usuario reintenta, se genera otro evento. Se garantiza que cada 302 tiene un evento, pero no que cada evento corresponda a una redirección.
+- **Operación.** Se mantienen dos servicios y dos bases de datos.
+
+## 2. Arquitectura 2: redirección permanente con rate limiter y caché
+
+**Beneficios.**
+
+- **Caché del navegador.** La respuesta 301 con `Cache-Control: public, max-age` permite que el navegador guarde la redirección. Mientras esa copia esté vigente, las visitas repetidas no llegan al servidor.
+- **Mantener múltiples copias de datos.** El caché en memoria de LiteStar responde sin consultar SQLite mientras la copia está vigente (`CACHE_TTL`, 60 s por defecto).
+- **Controlar el arribo de eventos.** El rate limiter acota las peticiones de cada IP (`RATE_LIMIT_REQUESTS`, 60 por minuto por defecto) y rechaza el exceso con 429 antes de resolver la URL. Esto protege el servicio frente a clientes abusivos.
+- **Simplicidad.** Solo hay un servicio y una base; no depende de Log.
+
+**Costos.**
+
+- **Sin analítica.** Las visitas resueltas por el navegador nunca llegan al servidor. Aunque se agregara un registro, no se podrían contar.
+- **Copias que el servidor no controla.** La API no permite editar enlaces. Las páginas de destino, sin embargo, pueden cambiar o desaparecer. Si en el futuro se corrigiera un enlace, los navegadores seguirían usando su copia hasta que venciera, y el servidor no tiene forma de invalidarla.
+- **Cuota por IP.** Los usuarios que comparten una misma IP de salida, como la red de un campus, comparten también la cuota y pueden recibir 429 sin ser abusivos. En el despliegue con Docker de esta entrega, todas las peticiones del host llegan con la IP del gateway de Docker ([validación](validation.md)).
+- **Estado local.** El caché y las cuotas viven en la memoria de un proceso: se pierden al reiniciarlo y no se comparten entre réplicas. Además, cuando una ráfaga llega con el caché vacío, varias peticiones pueden consultar la base antes de que exista una copia.
+
+## 3. Comparación por camino de ejecución
+
+| Camino | Arquitectura 1 | Arquitectura 2 |
 | --- | --- | --- |
-| Respuesta | 302 con `no-store`. | 301 con `public, max-age=TTL`. |
-| Trabajo de una visita válida | Lectura de URL y registro remoto confirmado. | Control de cuota y caché; lectura de URL si falta una copia vigente. |
-| Analítica | Guarda la URL original y hora de resolución. | No registra visitas; algunas no llegan al servidor por el caché del navegador. |
-| Disponibilidad | Redirigir depende también del registro gRPC. | No depende del registro. |
-| Operación | Dos procesos y dos bases para esta arquitectura. | Un proceso, una base y estado de caché/cuotas en memoria. |
+| Crear URL (`POST`) | Validación e inserción en SQLite. | Igual, tras el control de cuota. |
+| Hash válido | Lectura en SQLite y registro confirmado; luego 302. | Cuota; copia en caché o lectura en SQLite; luego 301. |
+| Visita repetida del mismo navegador | Repite el camino completo. | No llega al servidor mientras la copia del navegador esté vigente. |
+| Hash inexistente | 404 sin evento. | Cuota y 404; no se guarda en caché. |
+| Log lento o caído | 503 tras esperar hasta `GRPC_TIMEOUT`. | No aplica. |
+| Exceso de peticiones | Sin límite. | 429 sin resolver la URL. |
 
-Para una campaña que necesite registros de uso, v1 ofrece analítica con el costo de esperar su persistencia. Para enlaces estables sin esa necesidad, v2 evita trabajo repetido. No se dispone de tráfico real de la USM para cuantificar esa diferencia ni para afirmar cuál será más utilizada.
+Los tiempos de la tabla son parámetros configurados, no mediciones. `GRPC_TIMEOUT` limita solo la llamada gRPC, no la petición HTTP completa.
 
-## Recomendación para la USM
+## 4. Relevancia para la USM
 
-| Escenario de la USM | Arquitectura recomendada | Motivo |
+| Uso en la USM | Arquitectura adecuada | Razón |
 | --- | --- | --- |
-| Difusión medible, como el enlace de postulación a postgrado del enunciado, campañas de admisión o inscripción a eventos. | v1 | Cada visita llega al acortador y deja un evento con URL y hora. Es la única de las dos que permite contar visitas. |
-| Enlaces estables en reglamentos, documentos oficiales, material impreso o códigos QR. | v2 | El destino no debería cambiar, la redirección permanente expresa esa intención y el caché evita trabajo repetido. |
-| Publicaciones con demanda concentrada, como resultados o matrícula, sin necesidad de analítica. | v2, con cuota revisada | El caché evita consultar la base por cada visita y la cuota acota a cada cliente. Si muchos estudiantes salen por una misma IP del campus, la cuota por IP puede rechazar a usuarios legítimos. |
+| Campañas que deben medirse, como la postulación a postgrado del enunciado, admisión o eventos. | 1 | Es la única que permite contar visitas. |
+| Enlaces estables en reglamentos, documentos oficiales o códigos QR impresos. | 2 | El destino no debería cambiar, y la redirección permanente con caché evita trabajo repetido. |
+| Publicaciones con mucha demanda simultánea, como resultados o matrícula. | 2, revisando la cuota | El caché reduce la carga, pero una cuota por IP muy baja puede rechazar a estudiantes que comparten red. |
 
-No hay una arquitectura mejor en general: v1 compra información a costa de latencia y de depender del registro; v2 compra menos trabajo y menos dependencias a costa de no saber cuántas visitas hubo. La USM debería elegir por enlace o por tipo de campaña. Ambas versiones son independientes, por lo que un mismo hash no significa lo mismo en las dos.
+Ninguna arquitectura domina a la otra. La primera obtiene información a cambio de latencia y disponibilidad; la segunda obtiene desempeño y simplicidad a cambio de analítica y de control sobre las copias. Como la elección depende del propósito de cada enlace, la USM podría operar ambas.
 
-**Alternativa intermedia, no implementada.** v1 podría responder 302 sin esperar la confirmación y entregar el evento después, desde una cola. La redirección dejaría de depender de la disponibilidad del registro, pero un 302 ya no confirmaría el evento. Con una cola en memoria, un reinicio pierde eventos pendientes. Con una cola persistente se agrega un componente, la confirmación es diferida y los reintentos pueden duplicar eventos. Esta opción no sirve para v2: las visitas resueltas desde el caché del navegador nunca llegan al servidor.
+Hay una alternativa intermedia, no implementada: responder 302 sin esperar a Log y enviar el evento después, mediante una cola. La redirección dejaría de depender del registro. A cambio, los eventos podrían perderse (si la cola está en memoria) o se agregaría otro componente (si la cola es persistente).
 
-**Privacidad.** El evento de v1 guarda solo la URL de destino y la hora; no guarda IP, cookies ni identificadores del navegador. Agregarlos permitiría analítica por visitante, pero convertiría el registro en datos personales y obligaría a la USM a definir finalidad, plazo de retención y acceso. V2 sí procesa la IP para la cuota, pero solo en memoria y durante la ventana del límite; no la persiste.
+En cuanto a privacidad, el evento solo guarda la URL y la hora, sin IP ni identificadores del visitante. Registrar más datos convertiría el log en datos personales y exigiría definir finalidad y plazo de retención. La arquitectura 2 usa la IP para la cuota, pero solo en memoria.
 
-## Latencia y disponibilidad del registro
+## 5. Alcance de la evidencia
 
-El beneficio de esperar gRPC es concreto: el acortador emite 302 después de recibir la confirmación del registro. El costo incluye serialización, comunicación, espera por un trabajador y escritura en su base. Separar el servicio permite evolucionarlo por su cuenta, pero mantiene esa dependencia en el camino de redirección. No hay un bróker en esta implementación: es una llamada gRPC síncrona.
+Las [pruebas](validation.md) verifican el comportamiento funcional:
 
-Si el registro falla, v1 devuelve 503 sin `Location`. Redirigir igualmente favorecería la disponibilidad a costa de perder analítica. Incorporar una cola persistente cambiaría ese equilibrio, pero agregaría otro componente y confirmación diferida; no está implementado.
+- concurrencia en la asignación de IDs, en el registro gRPC y en el rate limiter;
+- el timeout ambiguo de gRPC;
+- la IP que observa el rate limiter en Docker.
 
-Los caminos tienen trabajo distinto:
+Los valores `CACHE_TTL=60`, `RATE_LIMIT_REQUESTS=60` y `GRPC_TIMEOUT=2` son parámetros configurables, no estimaciones de capacidad. Se desconocen el volumen y la distribución de las visitas de la USM, así como la tasa de acierto del caché. Por eso no se afirman mejoras de rendimiento cuantitativas.
 
-| Camino | Operaciones relevantes |
-| --- | --- |
-| POST válido | Validación e inserción transaccional. |
-| GET válido en v1 | Lectura de URL y espera de gRPC. |
-| GET válido en v2 sin copia vigente | Cuota, lectura de URL y almacenamiento en caché. |
-| GET válido en v2 con copia vigente | Cuota y caché; no consulta la URL en SQLite. |
-| GET inexistente | Consulta de URL sin registro; en v2 pasa antes por la cuota. |
-| Rechazo 429 | Control de cuota sin ejecutar la resolución. |
-| Redirección guardada por el navegador | No contacta al acortador. |
+## Bonus: identificadores únicos en un ambiente distribuido
 
-No se asigna el mismo tiempo a esos caminos ni se calcula una media sin sus frecuencias y mediciones. `GRPC_TIMEOUT=2` limita la espera de la RPC, no toda la petición HTTP. La consulta de URLs ocurre antes y SQLite configura hasta 10 segundos de espera ante bloqueo. También existen esperas de ejecución y red; sumar parámetros no demuestra un peor caso total.
+Base62 es una biyección: si cada `id` es único, cada hash también lo es. Por eso, el problema se reduce a no entregar nunca el mismo `id` dos veces. La secuencia SQLite actual cumple esto en un solo nodo; dos nodos con bases independientes generarían los mismos hashes. Existen tres estrategias:
 
-La consecuencia de agotar la RPC es 503, pero no garantiza que el evento esté ausente: el servidor puede completar una escritura ya iniciada después de que el cliente deje de esperar. `test_grpc_timeout_can_be_followed_by_a_committed_event` reproduce ese caso. La cancelación no interrumpe automáticamente todo el código de aplicación; véanse las guías gRPC de [deadlines](https://grpc.io/docs/guides/deadlines/) y [cancelación](https://grpc.io/docs/guides/cancellation/).
-
-## Consistencia y cambios de datos
-
-**Base de URLs.** ID y hash se confirman en la misma transacción, con una restricción única sobre el hash. Otras conexiones leen transacciones confirmadas, de acuerdo con el [aislamiento de SQLite](https://www.sqlite.org/isolation.html). WAL permite coexistencia de lecturas y escrituras, pero no elimina la serialización de escrituras.
-
-**Registro remoto.** Su commit es independiente de la base de URLs y de la entrega de la respuesta HTTP; no hay una transacción distribuida. Un error de comunicación puede dejar un evento persistido y un reintento puede producir otro. No se garantiza procesamiento exactamente una vez. El timestamp se toma antes del envío: la inserción concurrente no establece un orden global por timestamp, y un registro tampoco prueba que el navegador haya abierto el destino.
-
-**Copias de v2.** El servidor conserva respuestas 301 hasta vencer su TTL o reiniciar. Cada navegador tiene su propia vigencia: vencer el TTL del servidor no elimina una copia ya guardada por un cliente. No hay invalidación por edición ni coordinación entre réplicas. V1 agrega `no-store` explícitamente para impedir el almacenamiento en cachés conformes; el código 302 por sí solo no expresa esa prohibición. Véase [RFC 9111](https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.2.5).
-
-**Destino externo.** La API no permite editar equivalencias; eso no hace inmutables las páginas. Pueden cambiar, desaparecer o redirigir por su cuenta, y el acortador no descarga su contenido. Actualmente, publicar otra URL requiere crear otro enlace corto. Corregir el destino del mismo enlace exigiría ampliar la API y definir invalidación del caché del servidor y tratamiento de copias existentes en clientes.
-
-## Ráfagas, cuotas y datos desconocidos
-
-Una ráfaga puede encontrar el caché frío: varias peticiones pueden consultar la base antes de que exista una copia, porque no se agrupan consultas simultáneas por hash. V1 tiene ocho trabajadores gRPC y escrituras SQLite serializadas; de ese número no se deduce una tasa de atención. En los acortadores, LiteStar ejecuta los handlers síncronos en el ejecutor por defecto de asyncio, que en Python 3.12 tiene `min(32, núcleos + 4)` hilos. Se deduce, sin haberlo medido, que mientras el registro tarde, cada GET de v1 ocupa uno de esos hilos durante hasta `GRPC_TIMEOUT`; si se ocupan todos, también esperan las creaciones y `/health`.
-
-El límite de v2 se aplica por IP, incluso sobre respuestas cacheadas. Usuarios tras una misma salida de la USM comparten cuota. En el despliegue con Docker Compose de esta entrega, además, la IP observada para las peticiones del host es la del gateway de la red interna (medido en la [validación](validation.md)), de modo que todos esos clientes comparten una sola cuota. El valor de 60 peticiones por minuto es una política configurable, no una estimación de demanda o capacidad global. Caché y cuotas son locales a un proceso: reiniciarlo los vacía y añadir réplicas no crea un límite compartido.
-
-Las pruebas verifican 16 RPC desde ocho hilos emisores y ocho GET simultáneos con cuota de tres; sus resultados están en [la validación](validation.md). No se conocen el volumen de visitas esperado por la USM, su distribución temporal ni la proporción de aciertos de caché. No se inventan esos valores ni se presentan percentiles, capacidad máxima o garantías temporales a partir de pruebas funcionales.
-
-## Bonus: unicidad en un ambiente distribuido
-
-La secuencia actual garantiza unicidad en cada base SQLite. Dos nodos con bases independientes y el mismo contador producirían los mismos hashes: base62 es una biyección, no agrega unicidad a números repetidos. El problema se reduce, por tanto, a que ningún `id` se entregue dos veces. Si cada `id` es único, su codificación base62 también lo es, y una restricción única sobre `hash` actúa como última defensa.
-
-| Estrategia | Cómo garantiza unicidad | Condiciones | Costos |
+| Estrategia | Funcionamiento | Condición | Costo |
 | --- | --- | --- | --- |
-| Secuencia central | Una base transaccional autoritativa asigna cada `id`; por ejemplo, `nextval` de PostgreSQL es atómico entre sesiones concurrentes ([documentación](https://www.postgresql.org/docs/current/functions-sequence.html)). | Una sola autoridad de escritura. Un failover no debe reutilizar IDs confirmados, por ejemplo al restaurar un respaldo atrasado. | Cada creación depende de la autoridad; si no está disponible, se detienen las altas. Puede dejar saltos, lo que no afecta la unicidad. |
-| Rangos disjuntos | Un asignador central entrega bloques no solapados, por ejemplo `[597652313, 597653312]` al nodo A y el siguiente al nodo B. Cada nodo asigna dentro de su bloque sin coordinarse. | El asignador debe persistir el límite entregado antes de responder y no volver a entregarlo nunca, aunque un nodo se caiga. | Solo se consulta al asignador al agotar un bloque. Los IDs dejan de ser crecientes entre nodos y un nodo caído deja huecos. |
-| ID con nodo, al estilo Snowflake | Cada `id` combina tiempo, un identificador de nodo único y un contador local, por lo que dos nodos no pueden generar el mismo valor. | Los identificadores de nodo deben asignarse sin repetirse, y el reloj no debe retroceder: si lo hace, el nodo debe esperar o rechazar. | No requiere coordinación por creación. Los IDs crecen hasta 64 bits y el hash hasta 11 caracteres, y ya no empiezan en `597652313` con incremento 1. |
+| Secuencia central | Una base autoritativa asigna cada `id`; por ejemplo, con [`nextval` de PostgreSQL](https://www.postgresql.org/docs/current/functions-sequence.html), que es atómico. | Un solo escritor y un failover que no reutilice IDs. | Cada creación depende de esa base. |
+| Rangos disjuntos | Un asignador entrega bloques de IDs sin solapamiento a cada nodo, y cada nodo asigna localmente dentro de su bloque. | El asignador persiste cada bloque antes de entregarlo y nunca lo reasigna. | Los IDs no son crecientes entre nodos y quedan huecos. |
+| ID compuesto (estilo Snowflake) | Cada `id` combina tiempo, número de nodo y un contador local. | Números de nodo únicos y relojes que no retrocedan. | Los hashes son más largos y se pierde el inicio en `597652313` con incremento 1. |
 
-No se recomiendan UUID aleatorios ni el hash de la URL larga como identificador: su colisión es improbable, pero no imposible sin verificación, y producen URLs más largas. El enunciado admite identificadores no autoincrementales solo si su unicidad está asegurada.
+En todos los casos, la restricción `UNIQUE` sobre `hash` actúa como última defensa. Con un solo punto de escritura, la secuencia central es lo más simple. Si la USM agregara nodos de escritura, los rangos disjuntos mantendrían hashes cortos y consultarían al asignador solo de vez en cuando. No se recomiendan UUID aleatorios ni el hash de la URL: hacen poco probable una colisión, pero no la impiden.
 
-Para la USM, si existe un solo punto de escritura, la secuencia central es la opción más simple. Si se agregan nodos de escritura, los rangos disjuntos conservan hashes cortos y el inicio en `597652313`, y dependen del asignador solo ocasionalmente. Ninguna de estas alternativas está implementada en la entrega.
+## Referencias
+
+- L. Bass, P. Clements y R. Kazman, *Software Architecture in Practice*, 4.ª ed., Addison-Wesley, 2021: atributos de calidad y tácticas de desempeño y disponibilidad.
+- [RFC 9111: HTTP Caching](https://www.rfc-editor.org/rfc/rfc9111.html).
+- [gRPC: Deadlines](https://grpc.io/docs/guides/deadlines/).
+- [PostgreSQL: Sequence Manipulation Functions](https://www.postgresql.org/docs/current/functions-sequence.html).
