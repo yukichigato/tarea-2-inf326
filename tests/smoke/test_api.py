@@ -138,6 +138,10 @@ def test_v2_cache_avoids_reads_and_expires(tmp_path: Path) -> None:
             assert client.get(f"/{record.hash}", follow_redirects=False).status_code == 301
         assert read.call_count == 1
 
+        for query in ("?utm_source=a", "?utm_source=b"):
+            assert client.get(f"/{record.hash}{query}", follow_redirects=False).status_code == 301
+        assert read.call_count == 1
+
         time.sleep(1.1)
         assert client.get(f"/{record.hash}", follow_redirects=False).status_code == 301
         assert read.call_count == 2

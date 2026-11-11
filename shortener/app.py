@@ -108,7 +108,8 @@ def create_app(
         middleware=middleware,
         stores={"response_cache": MemoryStore(), "rate_limit": MemoryStore()},
         response_cache_config=ResponseCacheConfig(
-            cache_response_filter=lambda scope, status_code: status_code == 301
+            key_builder=lambda request: request.url.path,
+            cache_response_filter=lambda scope, status_code: status_code == 301,
         ),
         on_shutdown=shutdown_hooks,
         openapi_config=None,
