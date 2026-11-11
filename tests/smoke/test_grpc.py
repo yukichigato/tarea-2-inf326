@@ -93,6 +93,19 @@ def test_grpc_failure_uses_the_configured_deadline(log_server) -> None:
         logger.close()
 
 
+def test_grpc_ping_reports_reachability(log_server) -> None:
+    target, ca_path, _ = log_server
+    reachable = GrpcHitLogger(target, ca_path, timeout=2)
+    unreachable = GrpcHitLogger("localhost:1", ca_path, timeout=0.1)
+    try:
+        reachable.ping()
+        with pytest.raises(AnalyticsUnavailable):
+            unreachable.ping()
+    finally:
+        reachable.close()
+        unreachable.close()
+
+
 def test_grpc_timeout_can_be_followed_by_a_committed_event(
     log_server, monkeypatch: pytest.MonkeyPatch
 ) -> None:

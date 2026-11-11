@@ -172,6 +172,6 @@ Los hooks revisan formato de archivos, sintaxis YAML/JSON/TOML, conflictos de me
 - El caché y el rate limiter de v2 viven en memoria y corresponden a un solo proceso. Reiniciar el proceso los vacía; los datos de las URLs permanecen en su volumen.
 - El rate limiter utiliza la IP de conexión y no confía en `X-Forwarded-For`. `/health` queda excluido. Las solicitudes servidas desde caché también consumen cuota.
 - V1 espera la confirmación del registro antes de redirigir. Una falla de analítica devuelve 503; un timeout o una falla de red puede dejar un registro persistido aunque el cliente haya recibido un error. `GRPC_TIMEOUT` limita la RPC, no la duración total de la petición HTTP.
-- `/health` comprueba la base de URLs de cada API; el contenedor de registro tiene una comprobación TLS independiente.
+- `/health` comprueba la base de URLs de cada API. En v1 también exige que el canal gRPC con el registro esté listo dentro de `GRPC_TIMEOUT` y responde 503 si no lo está, porque en ese estado v1 no puede redirigir. El contenedor de registro tiene una comprobación TLS independiente.
 - Los eventos guardan la URL original normalizada y la hora UTC de resolución en el acortador. No confirman la apertura del destino. La [definición de los campos](docs/architecture.md#datos-del-contrato-y-su-procedencia) especifica su fuente y sus límites.
 - No se implementan autenticación, edición ni eliminación de URLs, porque no son parte del alcance funcional del enunciado. Eso no implica que el contenido de las páginas externas sea inmutable.

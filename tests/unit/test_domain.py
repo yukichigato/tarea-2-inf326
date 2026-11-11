@@ -63,3 +63,21 @@ def test_resolving_without_analytics_only_needs_the_repository() -> None:
     repository.get.return_value = ShortURL(1, "1", "https://usm.cl/")
 
     assert ShortenerService(repository).resolve("1") == "https://usm.cl/"
+
+
+def test_health_check_verifies_repository_and_analytics() -> None:
+    repository = Mock(spec=URLRepository)
+    logger = Mock(spec=HitLogger)
+
+    ShortenerService(repository, logger).check_health()
+
+    repository.ping.assert_called_once_with()
+    logger.ping.assert_called_once_with()
+
+
+def test_health_check_propagates_unavailable_analytics() -> None:
+    logger = Mock(spec=HitLogger)
+    logger.ping.side_effect = AnalyticsUnavailable
+
+    with pytest.raises(AnalyticsUnavailable):
+        ShortenerService(Mock(spec=URLRepository), logger).check_health()

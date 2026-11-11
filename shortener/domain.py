@@ -37,6 +37,8 @@ class URLRepository(Protocol):
 class HitLogger(Protocol):
     def record(self, url: str, visited_at: datetime) -> None: ...
 
+    def ping(self) -> None: ...
+
 
 class UnknownHash(Exception):
     pass
@@ -66,3 +68,8 @@ class ShortenerService:
         if self.hit_logger is not None:
             self.hit_logger.record(record.long_url, self.clock())
         return record.long_url
+
+    def check_health(self) -> None:
+        self.repository.ping()
+        if self.hit_logger is not None:
+            self.hit_logger.ping()

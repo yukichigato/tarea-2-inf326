@@ -33,7 +33,7 @@ flowchart TB
     v1 -->|201 o 302 con no-store| browser
 ```
 
-`POST /urls` valida la URL y confirma una transacción antes de devolver la equivalencia. `GET /{hash}` consulta la base, envía el evento y espera confirmación del servicio de registro antes de responder 302. Cada visita vuelve a ejecutar este flujo. Un hash inexistente devuelve 404; una falla de registro devuelve 503.
+`POST /urls` valida la URL y confirma una transacción antes de devolver la equivalencia. `GET /{hash}` consulta la base, envía el evento y espera confirmación del servicio de registro antes de responder 302. Cada visita vuelve a ejecutar este flujo. Un hash inexistente devuelve 404; una falla de registro devuelve 503. `/health` también responde 503 si el canal gRPC no queda listo dentro de `GRPC_TIMEOUT`; comprueba conectividad, no que la siguiente escritura vaya a confirmarse.
 
 El contrato está en `proto/shortener/rpc/hits.proto`: `RecordHit` recibe `url` y `visited_at` y devuelve `google.protobuf.Empty` tras persistirlos. Los archivos Python generados se crean dentro de la imagen y no se versionan.
 

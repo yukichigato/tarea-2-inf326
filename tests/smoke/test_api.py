@@ -114,6 +114,17 @@ def test_analytics_failure_returns_503(tmp_path: Path) -> None:
     assert "location" not in response.headers
 
 
+@pytest.mark.parametrize(("architecture", "status_code"), [("v1", 503), ("v2", 200)])
+def test_health_reports_analytics_only_when_v1_depends_on_it(
+    tmp_path: Path, architecture: str, status_code: int
+) -> None:
+    settings = Settings(architecture=architecture, database_path=tmp_path / "urls.sqlite3")
+    logger = Mock(spec=HitLogger)
+    logger.ping.side_effect = AnalyticsUnavailable
+    with TestClient(create_app(settings, hit_logger=logger)) as client:
+        assert client.get("/health").status_code == status_code
+
+
 def test_v2_cache_avoids_reads_and_expires(tmp_path: Path) -> None:
     repository = SQLiteURLRepository(tmp_path / "urls.sqlite3")
     record = repository.create("https://usm.cl/")

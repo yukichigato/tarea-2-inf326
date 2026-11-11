@@ -12,5 +12,4 @@ repos:
     rev: v0.17.3
     hooks:
       - id: ruff-check
-        args: [--extend-select, I]
       - id: ruff-format

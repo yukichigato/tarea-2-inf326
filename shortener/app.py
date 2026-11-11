@@ -86,8 +86,11 @@ def create_app(
         )
 
     @get("/health", sync_to_thread=True, include_in_schema=False)
-    def health() -> dict[str, str]:
-        repository.ping()
+    def health(shortener: NamedDependency[ShortenerService]) -> dict[str, str]:
+        try:
+            shortener.check_health()
+        except AnalyticsUnavailable as error:
+            raise HTTPException(status_code=503, detail="Analytics service unavailable") from error
         return {"status": "ok", "architecture": settings.architecture}
 
     middleware = []

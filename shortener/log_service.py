@@ -10,6 +10,8 @@ from shortener.rpc import hits_pb2, hits_pb2_grpc
 from shortener.settings import Settings
 from shortener.storage import SQLiteHitRepository
 
+HTTP_URL_ADAPTER = TypeAdapter(HttpUrl)
+
 
 class HitLogService(hits_pb2_grpc.HitLogServicer):
     def __init__(self, repository: SQLiteHitRepository) -> None:
@@ -17,7 +19,7 @@ class HitLogService(hits_pb2_grpc.HitLogServicer):
 
     def RecordHit(self, request: hits_pb2.UrlHit, context: grpc.ServicerContext) -> Empty:
         try:
-            TypeAdapter(HttpUrl).validate_python(request.url)
+            HTTP_URL_ADAPTER.validate_python(request.url)
             if not request.HasField("visited_at"):
                 raise ValueError("Missing timestamp")
             visited_at = request.visited_at.ToDatetime(tzinfo=UTC)
