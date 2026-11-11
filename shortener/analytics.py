@@ -28,9 +28,11 @@ class GrpcHitLogger:
             ) from error
 
     def ping(self) -> None:
+        readiness = grpc.channel_ready_future(self.channel)
         try:
-            grpc.channel_ready_future(self.channel).result(timeout=self.timeout)
+            readiness.result(timeout=self.timeout)
         except grpc.FutureTimeoutError as error:
+            readiness.cancel()
             raise AnalyticsUnavailable("The analytics service is not reachable") from error
 
     def close(self) -> None:

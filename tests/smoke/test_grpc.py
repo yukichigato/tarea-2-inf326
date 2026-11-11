@@ -4,6 +4,7 @@ from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
+from unittest.mock import Mock
 
 import grpc
 import pytest
@@ -104,6 +105,22 @@ def test_grpc_ping_reports_reachability(log_server) -> None:
     finally:
         reachable.close()
         unreachable.close()
+
+
+def test_failed_ping_releases_the_readiness_subscription(
+    log_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, ca_path, _ = log_server
+    readiness = Mock()
+    readiness.result.side_effect = grpc.FutureTimeoutError
+    monkeypatch.setattr(grpc, "channel_ready_future", lambda channel: readiness)
+    logger = GrpcHitLogger("localhost:1", ca_path, timeout=0.1)
+    try:
+        with pytest.raises(AnalyticsUnavailable):
+            logger.ping()
+    finally:
+        logger.close()
+    readiness.cancel.assert_called_once_with()
 
 
 def test_grpc_timeout_can_be_followed_by_a_committed_event(
