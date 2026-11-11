@@ -11,11 +11,10 @@ El [enunciado original](docs/2026_INF_326_Arquitectura_de_Software_Tarea_2.pdf),
 
 ## Integrantes
 
-Completar antes de la entrega académica:
-
 | Nombre | Rol |
 | --- | --- |
-| Pendiente de informar | Pendiente de informar |
+| Andrés Araya Díaz | 202287004-4 |
+| Baltazar Portilla Reyes | 202173112-1 |
 
 ## Prerrequisitos
 
