@@ -7,7 +7,7 @@ Implementación de dos arquitecturas de acortamiento de URLs en Python 3.12 con 
 | v1 | HTTP 302 | Impide almacenar la redirección y espera la confirmación del registro gRPC con TLS. |
 | v2 | HTTP 301 | Usa caché de respuestas con TTL y limita las peticiones por IP mediante LiteStar. |
 
-El [enunciado original](docs/2026_INF_326_Arquitectura_de_Software_Tarea_2.pdf), la [arquitectura y los contratos](docs/architecture.md), la [discusión de trade-offs](docs/tradeoffs.md) y la [evidencia de validación](docs/validation.md) están en `docs/`.
+La [discusión de trade-offs](docs/tradeoffs.md) y el [enunciado original](docs/2026_INF_326_Arquitectura_de_Software_Tarea_2.pdf) están en `docs/`.
 
 ## Integrantes
 
@@ -22,7 +22,7 @@ El [enunciado original](docs/2026_INF_326_Arquitectura_de_Software_Tarea_2.pdf),
 - Puertos locales 8443 y 8444 disponibles para los servicios.
 - `curl` para los ejemplos de API. No se necesita instalar Python en el host.
 
-La construcción instala las dependencias Python fijadas en `uv.lock`, genera protobuf y obtiene las bibliotecas de sistema de la imagen base fijada por digest. No requiere instalar paquetes manualmente dentro de los contenedores. La [validación](docs/validation.md) describe la construcción sin reutilizar capas y el alcance de esa comprobación.
+La construcción instala las dependencias Python fijadas en `uv.lock`, genera protobuf y obtiene las bibliotecas de sistema de la imagen base fijada por digest. No requiere instalar paquetes manualmente dentro de los contenedores; se comprobó con una construcción sin caché a partir de los archivos versionados.
 
 ## Ejecución
 
@@ -95,6 +95,40 @@ La respuesta incluye `302`, `Location` y `Cache-Control: no-store`. Para probar 
 
 Cada `POST` crea una equivalencia nueva, incluso si la URL ya existía. El servicio acepta URLs con esquema explícito, por ejemplo `https://usm.cl/`. Los dominios internacionales se guardan en punycode y los caracteres no ASCII de la ruta y la query, con codificación porcentual. Los parámetros de consulta en la URL corta (por ejemplo `?utm_source=x`) se ignoran.
 
+## Arquitectura
+
+Docker Compose representa el nodo de despliegue. Cada arquitectura tiene su propia base SQLite en un volumen persistente, y todas las conexiones usan TLS con una CA local.
+
+```mermaid
+flowchart LR
+    subgraph v1["Arquitectura 1"]
+        s1["Shortener v1<br/>LiteStar + cliente gRPC"] --> db1[(Shortener DB)]
+        s1 -->|"url hit (gRPC)"| log["Log<br/>servicio gRPC"]
+        log --> logdb[(Log DB)]
+    end
+    subgraph v2["Arquitectura 2"]
+        s2["Shortener v2<br/>LiteStar + rate limiter + caché"] --> db2[(Shortener DB)]
+    end
+```
+
+- **v1:** `GET /{hash}` lee la URL, envía el evento a Log y espera su confirmación antes de responder 302 con `no-store`.
+- **v2:** el rate limiter controla cada petición antes de resolverla. El caché en memoria guarda solo respuestas 301, con la ruta como clave y el TTL de `CACHE_TTL`.
+
+El código separa el dominio (`ShortenerService`) de sus adaptadores (`SQLiteURLRepository`, `GrpcHitLogger`). `create_app` los recibe por inyección de dependencias, lo que permite sustituirlos en las pruebas.
+
+Datos y su procedencia:
+
+| Campo | Fuente y significado |
+| --- | --- |
+| `id` | Secuencia SQLite de cada arquitectura; comienza en `597652313` y aumenta de uno en uno. |
+| `hash` | Base62 del `id`, calculado en la misma transacción que la inserción. |
+| `long_url` | URL HTTP/HTTPS enviada por el cliente y normalizada por Pydantic. El acortador no verifica su contenido. |
+| `short_url` | `PUBLIC_BASE_URL` seguido del hash. |
+| Evento `url` | La `long_url` guardada, igual a `Location`. |
+| Evento `visited_at` | Hora UTC del acortador al resolver el hash, antes de enviar el evento. No confirma que el navegador abra el destino. |
+
+El contrato gRPC está en `proto/shortener/rpc/hits.proto`. El evento no incluye el hash ni datos del visitante.
+
 ## Configuración
 
 Los valores predeterminados permiten ejecutar el proyecto sin crear archivos adicionales. Para cambiarlos, copiar `.env.example` a `.env` y editarlo:
@@ -153,6 +187,16 @@ V2_PORT=18444 V2_PUBLIC_BASE_URL=https://localhost:18444 \
 
 Las E2E consultan el registro persistido mediante una conexión SQLite de solo lectura. El volumen del registro permite crear los archivos auxiliares que SQLite necesita para leer una base en modo WAL.
 
+Para comprobar una instalación limpia, construir sin caché usando solo los archivos versionados:
+
+```sh
+git archive --format=tar HEAD | docker build --no-cache --target test -t inf326-shortener:test -
+git archive --format=tar HEAD | docker build --no-cache --target runtime -t inf326-shortener:runtime -
+docker run --rm inf326-shortener:test uv run --no-sync pytest
+```
+
+Se verificó el 10 de noviembre de 2026 con Docker 29.6.2 y Compose 5.3.1: pasaron 56 pruebas unitarias y smoke, y 2 E2E sobre volúmenes nuevos. Estas pruebas son funcionales y no miden capacidad ni latencia.
+
 ## Calidad y desarrollo
 
 Las dependencias se administran con `uv` y están fijadas en `uv.lock`. El Dockerfile utiliza caché de dependencias, genera los módulos protobuf durante la construcción y separa las herramientas de prueba de la imagen de ejecución. La imagen de ejecución contiene solo el entorno virtual y el código: no incluye `uv`, y los servicios se inician con el Python de ese entorno. Todos los servicios y las pruebas se ejecutan como un usuario sin privilegios.
@@ -171,8 +215,8 @@ Los hooks revisan formato de archivos, sintaxis YAML/JSON/TOML, conflictos de me
 - SQLite usa transacciones, WAL, consultas parametrizadas y una restricción única sobre el hash. Se verifica la asignación concurrente de identificadores en las pruebas.
 - El caché y el rate limiter de v2 viven en memoria y corresponden a un solo proceso. Reiniciar el proceso los vacía; los datos de las URLs permanecen en su volumen.
 - El rate limiter utiliza la IP de conexión y no confía en `X-Forwarded-For`. `/health` queda excluido. Las solicitudes servidas desde caché también consumen cuota.
-- Con los puertos publicados por Docker, v2 no ve la IP real de los clientes del host: en la validación, las peticiones a `localhost` y `127.0.0.1` llegaron con la IP del gateway de la red de Compose (`172.20.0.1`), mientras que las de otro contenedor llegaron con la IP de ese contenedor. Por eso, todos los clientes que entran por el puerto publicado comparten una cuota. Para cuotas por cliente en un despliegue real se necesita un proxy inverso de confianza y configurar uvicorn con `proxy_headers` y `forwarded_allow_ips` limitado a ese proxy.
+- Con los puertos publicados por Docker, v2 no ve la IP real de los clientes del host: según el log de acceso de v2, las peticiones a `localhost` y `127.0.0.1` llegaron con la IP del gateway de la red de Compose (`172.20.0.1`), mientras que las de otro contenedor llegaron con la IP de ese contenedor. Por eso, todos los clientes que entran por el puerto publicado comparten una cuota. Para cuotas por cliente en un despliegue real se necesita un proxy inverso de confianza y configurar uvicorn con `proxy_headers` y `forwarded_allow_ips` limitado a ese proxy.
 - V1 espera la confirmación del registro antes de redirigir. Una falla de analítica devuelve 503; un timeout o una falla de red puede dejar un registro persistido aunque el cliente haya recibido un error. `GRPC_TIMEOUT` limita la RPC, no la duración total de la petición HTTP.
 - `/health` comprueba la base de URLs de cada API. En v1 también exige que el canal gRPC con el registro esté listo dentro de `GRPC_TIMEOUT` y responde 503 si no lo está, porque en ese estado v1 no puede redirigir. El contenedor de registro tiene una comprobación TLS independiente.
-- Los eventos guardan la URL original normalizada y la hora UTC de resolución en el acortador. No confirman la apertura del destino. La [definición de los campos](docs/architecture.md#datos-del-contrato-y-su-procedencia) especifica su fuente y sus límites.
+- Los eventos guardan la URL original normalizada y la hora UTC de resolución en el acortador. No confirman la apertura del destino. La sección [Arquitectura](#arquitectura) define la fuente de cada campo.
 - No se implementan autenticación, edición ni eliminación de URLs, porque no son parte del alcance funcional del enunciado. Eso no implica que el contenido de las páginas externas sea inmutable.

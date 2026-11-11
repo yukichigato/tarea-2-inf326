@@ -26,7 +26,7 @@ Las dos arquitecturas resuelven los mismos requisitos funcionales, pero privileg
 
 - **Sin analítica.** Las visitas resueltas por el navegador nunca llegan al servidor. Aunque se agregara un registro, no se podrían contar.
 - **Copias que el servidor no controla.** La API no permite editar enlaces. Las páginas de destino, sin embargo, pueden cambiar o desaparecer. Si en el futuro se corrigiera un enlace, los navegadores seguirían usando su copia hasta que venciera, y el servidor no tiene forma de invalidarla.
-- **Cuota por IP.** Los usuarios que comparten una misma IP de salida, como la red de un campus, comparten también la cuota y pueden recibir 429 sin ser abusivos. En el despliegue con Docker de esta entrega, todas las peticiones del host llegan con la IP del gateway de Docker ([validación](validation.md)).
+- **Cuota por IP.** Los usuarios que comparten una misma IP de salida, como la red de un campus, comparten también la cuota y pueden recibir 429 sin ser abusivos. En el despliegue con Docker de esta entrega, todas las peticiones del host llegan con la IP del gateway de Docker, como se observó en su log de acceso.
 - **Estado local.** El caché y las cuotas viven en la memoria de un proceso: se pierden al reiniciarlo y no se comparten entre réplicas. Además, cuando una ráfaga llega con el caché vacío, varias peticiones pueden consultar la base antes de que exista una copia.
 
 ## 3. Comparación por camino de ejecución
@@ -58,11 +58,12 @@ En cuanto a privacidad, el evento solo guarda la URL y la hora, sin IP ni identi
 
 ## 5. Alcance de la evidencia
 
-Las [pruebas](validation.md) verifican el comportamiento funcional:
+Las pruebas automatizadas (ver el [README](../README.md#pruebas)) verifican el comportamiento funcional:
 
 - concurrencia en la asignación de IDs, en el registro gRPC y en el rate limiter;
-- el timeout ambiguo de gRPC;
-- la IP que observa el rate limiter en Docker.
+- el timeout ambiguo de gRPC.
+
+La IP que observa el rate limiter en Docker se midió aparte, en el log de acceso de v2.
 
 Los valores `CACHE_TTL=60`, `RATE_LIMIT_REQUESTS=60` y `GRPC_TIMEOUT=2` son parámetros configurables, no estimaciones de capacidad. Se desconocen el volumen y la distribución de las visitas de la USM, así como la tasa de acierto del caché. Por eso no se afirman mejoras de rendimiento cuantitativas.
 
