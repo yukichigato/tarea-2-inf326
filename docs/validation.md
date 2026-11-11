@@ -10,14 +10,15 @@ Las imágenes base de Python y `uv` están fijadas por digest en `Dockerfile`. S
 
 | Comprobación | Resultado y evidencia |
 | --- | --- |
-| Instalación completa | Construcción de las etapas `test` y `runtime` finalizada correctamente. Los tres servicios arrancaron saludables sobre volúmenes nuevos en el proyecto `inf326-audit-20261110`. |
+| Instalación completa | Construcción de las etapas `test` y `runtime` finalizada correctamente. Los tres servicios arrancaron saludables sobre volúmenes nuevos en el proyecto `inf326-audit-20261110b`. |
 | Dependencias en ejecución | Se importaron las bibliotecas de ejecución; `pytest`, `grpc_tools`, `ruff`, `uv` y `uvx` no están en la imagen final, de 328 MB. El usuario es `app`, UID 10001. |
-| Pruebas unitarias y smoke | 55 pruebas pasaron dentro de la imagen construida sin reutilizar capas. |
+| Pruebas unitarias y smoke | 56 pruebas pasaron dentro de la imagen construida sin reutilizar capas. |
 | E2E | Dos pruebas pasaron contra los contenedores de auditoría: TLS verificado, redirecciones, llegada al destino, eventos persistidos y cuota agotada. |
 | Contrato de URL | La prueba parametrizada conserva la URL normalizada y su query en respuesta, `Location` y evento; la prueba gRPC conserva un timestamp UTC inyectado. |
 | Concurrencia | 40 inserciones de URLs con ocho trabajadores sin IDs repetidos; 16 llamadas gRPC desde ocho hilos emisores persistidas; ocho GET concurrentes con cuota de tres devolvieron tres 301 y cinco 429. |
 | Salud de v1 | Con el contenedor `log` detenido, el healthcheck de v1 terminó con error (`/health` responde 503); al iniciarlo de nuevo, volvió a terminar correctamente. Las pruebas smoke cubren 503 en v1 y 200 en v2 ante un registro inaccesible. |
 | IP vista por el rate limiter | Peticiones desde el host a `localhost:18444` y `127.0.0.1:18444` aparecieron en el log de acceso de v2 con `172.20.0.1`, el gateway de la red de Compose; una petición desde otro contenedor apareció con `172.20.0.5`. Los clientes del host comparten cuota. |
+| Casos borde de la API | Con `TestClient` sobre ambas arquitecturas: un cuerpo no JSON, un formulario, un arreglo, `javascript:` y una URL de 3000 caracteres devolvieron 400; un dominio y una ruta con caracteres no ASCII se guardaron en punycode y con codificación porcentual, y `Location` fue idéntica; `HEAD` devolvió 405. En v2, las cabeceras `RateLimit` de respuestas cacheadas reflejan la cuota vigente y las variantes de query reutilizan la misma copia. |
 | Timeout ambiguo | Una prueba retiene la escritura remota hasta que el cliente recibe `DEADLINE_EXCEEDED`, la libera y verifica que el evento se confirma después del error. |
 
 Los totales de los experimentos son entradas controladas de pruebas; no representan tráfico esperado de la USM. Las E2E usan una página servida por el contenedor de pruebas, no disponibilidad de páginas externas. No se midieron capacidad, percentiles de latencia, distribución de llegadas ni proporciones de caché; no se atribuyen resultados de rendimiento a estas pruebas funcionales.
