@@ -94,7 +94,7 @@ Log escribe una línea por cada evento aceptado (`url hit recorded: hash=... url
 
 ## Arquitectura 2: redirección permanente con rate limiter y caché
 
-Cada petición pasa primero por el rate limiter de LiteStar, después por el caché de respuestas y, solo si el caché no tiene una copia vigente, llega al handler que consulta Shortener DB. La respuesta es un 301 con `Cache-Control: public, max-age=CACHE_TTL`.
+Cada petición pasa primero por el rate limiter de LiteStar, después por el caché de respuestas y, solo si el caché no tiene una copia vigente, llega al handler que consulta Shortener DB. La respuesta es un 301 con `Cache-Control: public, max-age=CACHE_TTL` (60 s por defecto); la [discusión de trade-offs](tradeoffs.md) justifica ese valor.
 
 ```mermaid
 flowchart LR
@@ -106,7 +106,7 @@ flowchart LR
     handler -->|"301 (se guarda en el caché)"| browser
 ```
 
-El rate limiter implementa la táctica *controlar arribo de eventos*. Admite `RATE_LIMIT_REQUESTS` peticiones por IP en una ventana fija de un minuto, que empieza con la primera petición de esa IP. Al agotar la cuota responde 429. Todas las respuestas incluyen las cabeceras `RateLimit-Limit`, `RateLimit-Remaining` y `RateLimit-Reset`. Como el limitador va antes del caché, también las respuestas cacheadas consumen cuota. LiteStar identifica al cliente por la IP de la conexión y no lee `X-Forwarded-For`.
+El rate limiter implementa la táctica *controlar arribo de eventos*. Admite `RATE_LIMIT_REQUESTS` peticiones por IP en una ventana fija de un minuto, que empieza con la primera petición de esa IP. Al agotar la cuota responde 429. La cuota predeterminada, 60 peticiones por minuto por IP, es el SLA declarado de la entrega, no una capacidad validada para producción. Todas las respuestas incluyen las cabeceras `RateLimit-Limit`, `RateLimit-Remaining` y `RateLimit-Reset`. Como el limitador va antes del caché, también las respuestas cacheadas consumen cuota. LiteStar identifica al cliente por la IP de la conexión y no lee `X-Forwarded-For`.
 
 El caché implementa la táctica *mantener múltiples copias de datos*. Guarda solo respuestas 301, durante `CACHE_TTL` segundos, con la ruta como clave: los parámetros de consulta no cambian la redirección y, con la clave por defecto de LiteStar, cada variante crearía una copia nueva. Los 404 no se guardan, de modo que un hash creado después de una consulta fallida queda disponible de inmediato. El handler escribe `Resolved <hash> from Shortener DB` cada vez que consulta la base; las visitas servidas desde el caché no producen esa línea, lo que permite comprobar el caché con `docker compose logs shortener-v2`.
 
@@ -128,6 +128,7 @@ Compose levanta `log` antes que `shortener-v1` y espera a que esté saludable; `
 | `id` autoincremental desde 597652313 y `hash` igual a base62 del `id`. | Hash de la URL o identificadores aleatorios. | Lo pide el enunciado, y base62 garantiza hashes únicos cuando los `id` son únicos. | Los hashes son cortos, pero consecutivos y predecibles. |
 | TLS también entre `shortener-v1` y `log`. | gRPC sin cifrar dentro de la red de Compose. | El enunciado pide conexiones seguras, y la misma CA sirve para HTTPS y gRPC. | Hay que generar y distribuir certificados, lo que hace el servicio `certificates`. |
 | Caché solo de respuestas 301, con la ruta como clave. | La clave por defecto de LiteStar, que incluye los parámetros de consulta. | Los parámetros no cambian la redirección y no deben multiplicar las copias. | Un hash creado después de un 404 no queda oculto por el caché. |
-| Rate limiter por IP, antes del caché. | Una cuota global o por usuario autenticado. | Es la configuración disponible en LiteStar, y la API no tiene usuarios. | Los clientes que comparten una IP (Docker, NAT, proxy) comparten una cuota. |
+| 301 con `max-age` igual a `CACHE_TTL` (60 s). | Omitir `max-age` o usar un valor largo, más cercano a una redirección permanente. | Acota el tiempo durante el cual un navegador usa una redirección desactualizada, por ejemplo si se retira un enlace de la base o si la base se recrea y los hashes se reasignan. | El caché del navegador solo evita las visitas repetidas dentro de un minuto. |
+| Rate limiter por IP, antes del caché, con un SLA de 60 peticiones por minuto. | Una cuota global o por usuario autenticado. | Es la configuración disponible en LiteStar, y la API no tiene usuarios. | Los clientes que comparten una IP (Docker, NAT, proxy) comparten una cuota. Detrás de un proxy habría que identificar al cliente con `X-Forwarded-For`, solo si lo agrega un proxy de confianza. |
 | Caché y cuotas en la memoria del proceso. | Un almacén compartido, como Redis. | Hay un solo proceso y no se agregan servicios. | Se pierden al reiniciar y no se comparten entre réplicas. |
 | Una imagen con dos fábricas de aplicación. | Dos bases de código. | Ambas arquitecturas comparten la creación de URLs, la validación y la salud, y difieren en la redirección, Log, el caché y el rate limiter. | Las diferencias de cada arquitectura quedan en `create_v1_app` y `create_v2_app`. |

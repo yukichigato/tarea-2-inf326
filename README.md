@@ -41,6 +41,14 @@ curl --cacert ca.crt https://localhost:8443/urls \
 
 El servicio responde con HTTP 201 y un JSON con `id`, `hash`, `long_url` y `short_url`. El primer registro recibe el identificador `597652313` y el hash `eRgfR`.
 
+La URL larga debe incluir el esquema `http://` o `https://`. Si no lo incluye, como el ejemplo `usm.cl/informatica/...` del enunciado, el servicio no crea el enlace y responde HTTP 400 con este cuerpo:
+
+```json
+{"status_code":400,"detail":"Validation failed for POST /urls","extra":[{"message":"Input should be a valid URL, relative URL without a base","key":"long_url"}]}
+```
+
+En ese caso hay que enviarla con el esquema, por ejemplo `https://usm.cl/informatica/...`.
+
 `GET /HASH` redirige a la URL original:
 
 ```sh
@@ -106,8 +114,8 @@ Los valores predeterminados funcionan sin cambios. Para modificarlos, se copia `
 | `V1_PORT`, `V2_PORT` | `8443`, `8444` | Puertos HTTPS de cada arquitectura. |
 | `V1_PUBLIC_BASE_URL`, `V2_PUBLIC_BASE_URL` | `https://localhost:8443`, `https://localhost:8444` | Origen de las URLs cortas de cada arquitectura. |
 | `GRPC_TIMEOUT` | `2` | Segundos de espera máxima por cada registro de visita. |
-| `CACHE_TTL` | `60` | Segundos de vigencia del caché en la arquitectura 2. |
-| `RATE_LIMIT_REQUESTS` | `60` | Peticiones por IP y por minuto en la arquitectura 2. |
+| `CACHE_TTL` | `60` | Segundos de vigencia del caché del servidor y del `max-age` del 301 en la arquitectura 2. |
+| `RATE_LIMIT_REQUESTS` | `60` | Peticiones por IP y por minuto en la arquitectura 2. Es el SLA declarado de la entrega; [docs/tradeoffs.md](docs/tradeoffs.md) explica sus límites. |
 
 ## Pruebas
 
@@ -126,6 +134,34 @@ V1_PUBLIC_BASE_URL=https://localhost:18443 V2_PUBLIC_BASE_URL=https://localhost:
 docker compose -p inf326-e2e --profile test run --build --rm --no-deps tests \
   uv run --no-sync pytest -m e2e
 docker compose -p inf326-e2e down
+```
+
+## Uso desde Windows (PowerShell)
+
+Los comandos `docker compose` de este README funcionan igual en PowerShell. Para `curl` hay tres diferencias con bash:
+
+- En Windows PowerShell 5.1, `curl` es un alias de `Invoke-WebRequest`, que no acepta las opciones de curl. Hay que escribir `curl.exe`, el curl incluido en Windows 10 y 11.
+- PowerShell 5.1 quita las comillas dobles de un JSON escrito en la línea de comandos antes de pasarlo a `curl.exe`. Por eso conviene guardar el cuerpo en un archivo y enviarlo con `--data-binary`.
+- `curl.exe` de Windows comprueba si el certificado fue revocado, y la CA local de este proyecto no publica esa información, así que la conexión falla con `the revocation status is unknown`. La opción `--ssl-no-revoke` omite solo esa comprobación: el certificado se sigue validando con `ca.crt`.
+
+Creación y visita de un enlace:
+
+```powershell
+docker compose cp certificates:/certs/ca.crt ./ca.crt
+Set-Content -Path body.json -Value '{"long_url":"https://usm.cl/informatica/"}' -Encoding ascii
+curl.exe --ssl-no-revoke --cacert ca.crt https://localhost:8443/urls -H "Content-Type: application/json" --data-binary "@body.json"
+curl.exe --ssl-no-revoke --cacert ca.crt -i https://localhost:8443/eRgfR
+```
+
+Pruebas E2E. Las variables de entorno se fijan para la sesión y se eliminan al final, para que un `docker compose up` posterior vuelva a usar los puertos predeterminados:
+
+```powershell
+$env:V1_PORT = "18443"; $env:V2_PORT = "18444"
+$env:V1_PUBLIC_BASE_URL = "https://localhost:18443"; $env:V2_PUBLIC_BASE_URL = "https://localhost:18444"
+docker compose -p inf326-e2e up -d --build --wait
+docker compose -p inf326-e2e --profile test run --build --rm --no-deps tests uv run --no-sync pytest -m e2e
+docker compose -p inf326-e2e down
+Remove-Item Env:V1_PORT, Env:V2_PORT, Env:V1_PUBLIC_BASE_URL, Env:V2_PUBLIC_BASE_URL
 ```
 
 ## Consideraciones de implementación
