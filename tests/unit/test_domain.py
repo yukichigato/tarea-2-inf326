@@ -2,15 +2,19 @@ from datetime import UTC, datetime
 from unittest.mock import Mock
 
 import pytest
+from pydantic import HttpUrl, TypeAdapter, ValidationError
 
 from shortener.domain import (
+    MAX_URL_LENGTH,
     AnalyticsUnavailable,
     HitLogger,
     ShortenerService,
     ShortURL,
     UnknownHash,
+    UrlHit,
     URLRepository,
     encode_base62,
+    is_base62,
 )
 
 
@@ -26,7 +30,20 @@ def test_base62_rejects_negative_numbers() -> None:
         encode_base62(-1)
 
 
-def test_resolving_url_records_the_destination_and_injected_time() -> None:
+@pytest.mark.parametrize(("code", "expected"), [("eRgfR", True), ("", False), ("eR-fR", False)])
+def test_base62_check(code: str, expected: bool) -> None:
+    assert is_base62(code) is expected
+
+
+def test_url_length_limit_matches_the_one_pydantic_applies_in_log() -> None:
+    url = "https://usm.cl/"
+    adapter = TypeAdapter(HttpUrl)
+    adapter.validate_python(url + "a" * (MAX_URL_LENGTH - len(url)))
+    with pytest.raises(ValidationError):
+        adapter.validate_python(url + "a" * (MAX_URL_LENGTH - len(url) + 1))
+
+
+def test_resolving_url_records_the_hash_destination_and_injected_time() -> None:
     repository = Mock(spec=URLRepository)
     repository.get.return_value = ShortURL(1, "1", "https://usm.cl/")
     logger = Mock(spec=HitLogger)
@@ -34,7 +51,7 @@ def test_resolving_url_records_the_destination_and_injected_time() -> None:
     service = ShortenerService(repository, logger, clock=lambda: visited_at)
 
     assert service.resolve("1") == "https://usm.cl/"
-    logger.record.assert_called_once_with("https://usm.cl/", visited_at)
+    logger.record.assert_called_once_with(UrlHit("1", "https://usm.cl/", visited_at))
 
 
 def test_missing_url_does_not_record_a_visit() -> None:

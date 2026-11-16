@@ -5,6 +5,9 @@ from typing import Protocol
 
 BASE62_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 INITIAL_ID = 597652313
+# Pydantic's HttpUrl accepts at most 2083 characters. The shortener and the Log
+# service both apply this limit to the normalized URL, so they accept the same URLs.
+MAX_URL_LENGTH = 2083
 
 
 def encode_base62(number: int) -> str:
@@ -19,11 +22,24 @@ def encode_base62(number: int) -> str:
     return "".join(reversed(digits))
 
 
+def is_base62(code: str) -> bool:
+    return bool(code) and all(character in BASE62_ALPHABET for character in code)
+
+
 @dataclass(frozen=True)
 class ShortURL:
     id: int
     hash: str
     long_url: str
+
+
+@dataclass(frozen=True)
+class UrlHit:
+    """A visit to a short URL: the "url hit" event that architecture 1 sends to Log."""
+
+    hash: str
+    url: str
+    visited_at: datetime
 
 
 class URLRepository(Protocol):
@@ -35,7 +51,7 @@ class URLRepository(Protocol):
 
 
 class HitLogger(Protocol):
-    def record(self, url: str, visited_at: datetime) -> None: ...
+    def record(self, hit: UrlHit) -> None: ...
 
     def ping(self) -> None: ...
 
@@ -66,7 +82,7 @@ class ShortenerService:
         if record is None:
             raise UnknownHash(code)
         if self.hit_logger is not None:
-            self.hit_logger.record(record.long_url, self.clock())
+            self.hit_logger.record(UrlHit(record.hash, record.long_url, self.clock()))
         return record.long_url
 
     def check_health(self) -> None:

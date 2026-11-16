@@ -53,6 +53,7 @@ def test_v1_https_redirects_and_persists_every_visit(secure_client, destination_
 
     created = secure_client.post(f"{base_url}/urls", json={"long_url": destination_url})
     assert created.status_code == 201
+    short_hash = created.json()["hash"]
     short_path = urlsplit(created.json()["short_url"]).path
     for _ in range(2):
         redirect = secure_client.get(f"{base_url}{short_path}")
@@ -66,10 +67,11 @@ def test_v1_https_redirects_and_persists_every_visit(secure_client, destination_
     database_path = Path(os.environ["E2E_LOG_DATABASE_PATH"])
     with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)) as connection:
         rows = connection.execute(
-            "SELECT url, visited_at FROM hits WHERE url = ?", (destination_url,)
+            "SELECT hash, url, visited_at FROM hits WHERE url = ?", (destination_url,)
         ).fetchall()
     assert len(rows) == 2
-    for url, visited_at in rows:
+    for code, url, visited_at in rows:
+        assert code == short_hash
         assert url == destination_url
         assert datetime.fromisoformat(visited_at) >= started_at
 

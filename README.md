@@ -1,6 +1,6 @@
 # INF326 — Tarea 2: acortador de URLs
 
-Este repositorio implementa dos arquitecturas de un acortador de URLs en Python 3.12 con LiteStar, SQLite y `uv`. La arquitectura 1 responde con una redirección temporal (HTTP 302) y registra cada visita en un servicio gRPC. La arquitectura 2 responde con una redirección permanente (HTTP 301), guarda las respuestas en un caché y limita las peticiones de cada IP. La discusión de trade-offs está en [docs/tradeoffs.md](docs/tradeoffs.md).
+Este repositorio implementa dos arquitecturas de un acortador de URLs en Python 3.12 con LiteStar, SQLite y `uv`. La arquitectura 1 responde con una redirección temporal (HTTP 302) y registra cada visita en un servicio gRPC. La arquitectura 2 responde con una redirección permanente (HTTP 301), guarda las respuestas en un caché y limita las peticiones de cada IP. El diseño detallado está en [docs/architecture.md](docs/architecture.md) y la discusión de trade-offs en [docs/tradeoffs.md](docs/tradeoffs.md).
 
 ## Integrantes
 
@@ -11,7 +11,7 @@ Este repositorio implementa dos arquitecturas de un acortador de URLs en Python 
 
 ## Requisitos previos
 
-El proyecto necesita Docker y Docker Compose, y los puertos locales 8443 y 8444 libres. Python y las dependencias se instalan dentro de las imágenes.
+El proyecto necesita Docker y Docker Compose, conexión a internet para la primera construcción y los puertos locales 8443 y 8444 libres. Python y las dependencias se instalan dentro de las imágenes. Los procedimientos de este README se probaron con Docker 29.7.2 y Docker Compose v5.5.0 en Linux/amd64 (WSL2 con Docker Desktop). En esa prueba, la primera construcción tardó unos 8 minutos, porque descarga las imágenes base y las dependencias.
 
 ## Ejecución
 
@@ -53,6 +53,8 @@ La arquitectura 1 responde con `302` y `Cache-Control: no-store`. La arquitectur
 | --- | --- |
 | La URL es válida. | 201 |
 | La URL es inválida o carece de esquema HTTP/HTTPS. | 400 |
+| La URL normalizada supera 2083 caracteres, por ejemplo por la codificación de caracteres no ASCII. | 400 |
+| La URL pertenece al propio acortador. | 400 |
 | El hash es desconocido. | 404 |
 | El cliente agotó su cuota en la arquitectura 2. | 429 |
 | La arquitectura 1 falló al registrar la visita. | 503 |
@@ -71,9 +73,29 @@ flowchart LR
     end
 ```
 
-En la arquitectura 1, el acortador lee la URL, envía al servicio Log un evento `url hit` con la URL y la hora UTC de la visita, y redirige cuando Log confirma la escritura. En la arquitectura 2, el rate limiter de LiteStar controla las peticiones de cada IP, y el caché en memoria guarda las redirecciones durante `CACHE_TTL` segundos. Docker Compose despliega todos los servicios en un mismo nodo, con TLS entre ellos.
+En la arquitectura 1, el acortador lee la URL, envía al servicio Log un evento `url hit` con el hash del enlace corto, la URL larga y la hora UTC de la visita, y redirige cuando Log confirma la escritura. En la arquitectura 2, el rate limiter de LiteStar controla las peticiones de cada IP, y el caché en memoria guarda las redirecciones durante `CACHE_TTL` segundos. Docker Compose despliega todos los servicios en un mismo nodo, con TLS entre ellos.
 
-SQLite asigna los `id` con una secuencia que comienza en `597652313` y aumenta de uno en uno. El `hash` es la codificación base62 del `id`, con el mismo alfabeto de `pybase62`. El contrato gRPC está en `proto/shortener/rpc/hits.proto`.
+SQLite asigna los `id` con una secuencia que comienza en `597652313` y aumenta de uno en uno. El `hash` es la codificación base62 del `id`, con el mismo alfabeto de `pybase62`. El contrato gRPC está en `proto/shortener/rpc/hits.proto`. [docs/architecture.md](docs/architecture.md) relaciona cada servicio con las figuras del enunciado y describe los contratos, el comportamiento ante fallas y las decisiones de diseño.
+
+## Verificar el funcionamiento
+
+Con los servicios levantados y algunas visitas hechas, Log escribe una línea por cada evento `url hit` que recibe:
+
+```sh
+docker compose logs log
+```
+
+```text
+INFO:     shortener.log_service - url hit recorded: hash=eRgfR url=https://usm.cl/informatica/ visited_at=2026-11-16T17:42:45.286000+00:00
+```
+
+Este comando lee la Log DB en modo de solo lectura y muestra las visitas de cada enlace corto y las últimas registradas:
+
+```sh
+docker compose exec log python -m shortener.hits_report
+```
+
+En la arquitectura 2, el handler escribe `Resolved <hash> from Shortener DB` solo cuando consulta la base. Tras varias visitas seguidas al mismo hash, `docker compose logs shortener-v2` muestra una sola de esas líneas, porque el resto se respondió desde el caché. Las cabeceras `RateLimit-Remaining` de cada respuesta muestran la cuota que queda, y al agotarla el servicio responde 429.
 
 ## Configuración
 
@@ -108,6 +130,8 @@ docker compose -p inf326-e2e down
 
 ## Consideraciones de implementación
 
-La arquitectura 1 responde 503 si el servicio Log falla o tarda más que `GRPC_TIMEOUT`, y su `/health` también responde 503 mientras Log está caído. La arquitectura 2 guarda el caché y las cuotas en memoria, así que ambos se vacían al reiniciar el servicio. Detrás de los puertos publicados por Docker, todas las peticiones del host llegan al rate limiter con la misma IP y comparten una cuota.
+La arquitectura 1 responde 503 si el servicio Log falla o tarda más que `GRPC_TIMEOUT`, y su `/health` también responde 503 mientras Log está caído. Cuando Log no confirma una visita, `shortener-v1` registra una advertencia con el código gRPC. La arquitectura 2 guarda el caché y las cuotas en memoria, así que ambos se vacían al reiniciar el servicio, y purga las entradas vencidas cada 60 segundos. Detrás de los puertos publicados por Docker, todas las peticiones del host llegan al rate limiter con la IP del gateway de la red de Compose y comparten una cuota.
+
+Pydantic normaliza las URLs antes de guardarlas: el esquema y el host quedan en minúsculas y los caracteres no ASCII se codifican. El límite de 2083 caracteres se aplica a la URL normalizada, el mismo que aplica Log al validar el evento. Una base de Log creada antes de que el evento incluyera el hash se actualiza al arrancar el servicio, y sus visitas anteriores quedan sin hash.
 
 Los cambios pasan por hooks de pre-commit con Ruff, que se instalan con `uvx --from pre-commit==4.7.0 pre-commit install`.

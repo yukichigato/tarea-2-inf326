@@ -9,7 +9,12 @@ service HitLog {
   rpc RecordHit (UrlHit) returns (google.protobuf.Empty);
 }
 
+// A visit to a short URL, sent by Shortener v1 before it answers with 302.
 message UrlHit {
+  // Long URL (normalized destination) of the visited short URL.
   string url = 1;
+  // UTC time at which the shortener resolved the short URL.
   google.protobuf.Timestamp visited_at = 2;
+  // Base62 hash of the visited short URL; it tells apart short URLs with the same destination.
+  string hash = 3;
 }

@@ -1,10 +1,9 @@
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from datetime import datetime
 from pathlib import Path
 
-from shortener.domain import INITIAL_ID, ShortURL, encode_base62
+from shortener.domain import INITIAL_ID, ShortURL, UrlHit, encode_base62
 
 
 class SQLiteDatabase:
@@ -71,12 +70,45 @@ class SQLiteHitRepository(SQLiteDatabase):
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS hits ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                "url TEXT NOT NULL, visited_at TEXT NOT NULL)"
+                "url TEXT NOT NULL, visited_at TEXT NOT NULL, hash TEXT NOT NULL)"
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(hits)")}
+            if "hash" not in columns:
+                # A Log DB created before the event carried the hash keeps its earlier
+                # visits, which have no hash (NULL); new visits always store one.
+                connection.execute("ALTER TABLE hits ADD COLUMN hash TEXT")
+            connection.execute("CREATE INDEX IF NOT EXISTS hits_hash ON hits(hash)")
 
-    def record(self, url: str, visited_at: datetime) -> None:
+    def record(self, hit: UrlHit) -> None:
         with self.connection() as connection:
             connection.execute(
-                "INSERT INTO hits(url, visited_at) VALUES (?, ?)",
-                (url, visited_at.isoformat()),
+                "INSERT INTO hits(hash, url, visited_at) VALUES (?, ?, ?)",
+                (hit.hash, hit.url, hit.visited_at.isoformat()),
             )
+
+
+class SQLiteHitReader:
+    """Read-only queries on the Log DB, used to inspect the recorded visits."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            yield connection
+
+    def visits_by_hash(self) -> list[sqlite3.Row]:
+        with self.connection() as connection:
+            return connection.execute(
+                "SELECT hash, url, COUNT(*) AS visits, MAX(visited_at) AS last_visit "
+                "FROM hits GROUP BY hash, url ORDER BY visits DESC, hash"
+            ).fetchall()
+
+    def latest(self, limit: int) -> list[sqlite3.Row]:
+        with self.connection() as connection:
+            return connection.execute(
+                "SELECT hash, url, visited_at FROM hits ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
