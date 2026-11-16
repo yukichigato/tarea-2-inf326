@@ -27,7 +27,13 @@ La arquitectura 1 queda disponible en `https://localhost:8443` y la arquitectura
 docker compose cp certificates:/certs/ca.crt ./ca.crt
 ```
 
-`docker compose down` detiene los servicios y conserva los datos.
+`docker compose stop` solo detiene los contenedores. `docker compose down` los detiene y elimina, pero conserva los volúmenes con los datos. Para comenzar desde un estado limpio:
+
+```sh
+docker compose down -v
+```
+
+Este comando detiene y elimina los contenedores y, además, los volúmenes del proyecto declarados en `compose.yaml` (`certificates`, `log-data`, `v1-data` y `v2-data`). Borra de forma irreversible las URLs de ambas arquitecturas, las visitas registradas por Log y la CA local, así que solo debe usarse para empezar de cero. Después del siguiente `up` hay que volver a copiar `ca.crt`, y el primer enlace vuelve a recibir el hash `eRgfR`.
 
 ## API
 
@@ -66,6 +72,14 @@ La arquitectura 1 responde con `302` y `Cache-Control: no-store`. La arquitectur
 | El hash es desconocido. | 404 |
 | El cliente agotó su cuota en la arquitectura 2. | 429 |
 | La arquitectura 1 falló al registrar la visita. | 503 |
+
+`GET /health` informa el estado de cada servicio y no cuenta para el rate limiter:
+
+```sh
+curl --cacert ca.crt https://localhost:8443/health
+```
+
+Si el servicio está saludable, responde 200 con `{"status":"ok","architecture":"v1"}` (o `"v2"` en el puerto 8444). En ambas arquitecturas comprueba que puede leer su Shortener DB. En la arquitectura 1 comprueba además que el canal gRPC hacia Log se conecta dentro de `GRPC_TIMEOUT`; si no, responde 503 con `Analytics service unavailable`. Solo verifica esa conexión, no que Log pueda registrar la próxima visita. Compose usa este endpoint en los healthchecks de `shortener-v1` y `shortener-v2`.
 
 ## Arquitectura
 
@@ -136,9 +150,11 @@ docker compose -p inf326-e2e --profile test run --build --rm --no-deps tests \
 docker compose -p inf326-e2e down
 ```
 
+La prueba de la arquitectura 2 hace peticiones hasta agotar la cuota de 60 por minuto y recibir 429. Si las pruebas se vuelven a ejecutar antes de que termine esa ventana de un minuto, la cuota sigue agotada y la prueba falla con un 429 inesperado. Es el efecto del límite configurado (`RATE_LIMIT_REQUESTS`), no necesariamente un fallo de la implementación. Para repetirlas hay que esperar a que la cuota se restablezca, como máximo un minuto; la cabecera `RateLimit-Reset` indica los segundos que faltan. Si se sigue el procedimiento completo, `down` elimina el contenedor y, con él, las cuotas guardadas en memoria.
+
 ## Uso desde Windows (PowerShell)
 
-Los comandos `docker compose` de este README funcionan igual en PowerShell. Para `curl` hay tres diferencias con bash:
+Los comandos de esta sección se probaron con Windows PowerShell 5.1; no se probaron con PowerShell 7. Los comandos `docker compose` de este README funcionan igual en PowerShell. Para `curl` hay tres diferencias con bash:
 
 - En Windows PowerShell 5.1, `curl` es un alias de `Invoke-WebRequest`, que no acepta las opciones de curl. Hay que escribir `curl.exe`, el curl incluido en Windows 10 y 11.
 - PowerShell 5.1 quita las comillas dobles de un JSON escrito en la línea de comandos antes de pasarlo a `curl.exe`. Por eso conviene guardar el cuerpo en un archivo y enviarlo con `--data-binary`.
