@@ -1,11 +1,13 @@
-from datetime import datetime
+import logging
 from pathlib import Path
 
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 
-from shortener.domain import AnalyticsUnavailable
+from shortener.domain import AnalyticsUnavailable, UrlHit
 from shortener.rpc import hits_pb2, hits_pb2_grpc
+
+logger = logging.getLogger(__name__)
 
 
 class GrpcHitLogger:
@@ -15,14 +17,21 @@ class GrpcHitLogger:
         self.stub = hits_pb2_grpc.HitLogStub(self.channel)
         self.timeout = timeout
 
-    def record(self, url: str, visited_at: datetime) -> None:
+    def record(self, hit: UrlHit) -> None:
         timestamp = Timestamp()
-        timestamp.FromDatetime(visited_at)
+        timestamp.FromDatetime(hit.visited_at)
         try:
             self.stub.RecordHit(
-                hits_pb2.UrlHit(url=url, visited_at=timestamp), timeout=self.timeout
+                hits_pb2.UrlHit(hash=hit.hash, url=hit.url, visited_at=timestamp),
+                timeout=self.timeout,
             )
         except grpc.RpcError as error:
+            logger.warning(
+                "Log did not confirm the visit to %s: %s %s",
+                hit.hash,
+                error.code().name,
+                error.details(),
+            )
             raise AnalyticsUnavailable(
                 "The analytics service could not record the visit"
             ) from error
